@@ -5,11 +5,11 @@
 > **Netuid 490 · Bittensor testnet · winner-take-all**
 
 Never Play Alone turns Minecraft into a proving ground for autonomous agents.
-Miners upload one `tar.gz` agent package per round to the backend. At round
-freeze, validators download the same frozen roster, run every miner against the
-same deterministic [mcbench](../neverplayalone_mcbench/) task, upload artifacts
-and raw scoreboards, then compute the winner locally using validator stake
-weights and set winner-take-all chain weights.
+Miners upload one `tar.gz` agent package per round to the backend. When a round
+enters evaluation, validators download the same derived roster, run every miner
+against the same deterministic [mcbench](../neverplayalone_mcbench/) task,
+upload artifacts and raw scoreboards, then compute the winner locally using
+validator stake weights and set winner-take-all chain weights.
 
 No central referee decides the winner. The chain does.
 
@@ -18,30 +18,27 @@ No central referee decides the winner. The chain does.
 | Role | What they do | Reward |
 | --- | --- | --- |
 | **Miner** | Upload one `tar.gz` agent package for the current submission round | Emission if ranked first |
-| **Validator** | Download the frozen round roster, run all miners with mcbench, upload scoreboards, compute the winner, set weights | Validator dividends |
-| **Owner validator** | A normal validator that can bootstrap the first round and freeze rounds when their evaluation window starts | Same as any validator |
-
+| **Validator** | Download the round roster, run all miners with mcbench, upload scoreboards, compute the winner, set weights | Validator dividends |
 ## Architecture
 
 ```
         neverplayalone_api                  subtensor (netuid 490)
         ──────────────────                  ──────────────────────
               │                                       │
-              │ submission rounds                     │ metagraph / stakes
-              │ frozen roster manifests               │ set_weights
+              │ submission intake                     │ metagraph / stakes
+              │ derived round roster                  │ set_weights
               │ validator artifacts + scoreboards     │
               │ consensus result observability        │
               │                                       │
    ┌──────────┴──────────┐                ┌───────────┴────────────┐
-   │ owner validator     │                │ other validators       │
-   │  - bootstrap round  │                │  - poll current rounds │
-   │  - freeze round     │                │  - download roster     │
-   │  - run eval too     │                │  - run mcbench batch   │
-   └──────────┬──────────┘                │  - upload scoreboards  │
-              │                           │  - compute local winner│
-              │ frozen roster download    └────────────────────────┘
-              ▼
-          mcbench batch evaluation
+   │ validators          │                │ miners                 │
+   │  - poll current     │                │  - submit tar.gz       │
+   │    round windows    │                │    for open round      │
+   │  - download roster  │                └────────────────────────┘
+   │  - run mcbench batch│
+   │  - upload results   │
+   │  - compute winner   │
+   └─────────────────────┘
 ```
 
 ## Layout
@@ -76,7 +73,8 @@ The backend lives in the separate `neverplayalone_api` repository.
 npa submit ./agent.tar.gz --wallet miner --hotkey hk1
 ```
 
-Validators will pick it up when the current submission round freezes.
+Validators will pick it up when the current submission round closes and the
+round enters evaluation.
 
 ## Run a validator
 
@@ -88,9 +86,6 @@ btcli subnet register --netuid 490 --subtensor.network test --wallet.name valida
 NPA_WALLET=validator NPA_HOTKEY=hk1 npa-validator
 ```
 
-If your hotkey matches `OWNER_HOTKEY`, the validator can additionally bootstrap
-the first round and freeze rounds when their evaluation start time arrives.
-
 The validator also runs a local OpenAI-compatible proxy for miner containers.
 Miner sandboxes get no direct internet access; they can only reach Minecraft and
 this proxy, which forwards to Chutes and enforces a per-run spend cap.
@@ -100,9 +95,10 @@ this proxy, which forwards to Chutes and enforces a per-run spend cap.
 Each round:
 
 1. Miners upload one `tar.gz` agent package before the round freezes.
-2. At freeze, the backend publishes one frozen roster manifest with:
+2. At evaluation start, the backend exposes one roster manifest derived from
+   accepted submissions finalized before the round cutoff, with:
    - round id
-   - freeze block hash / round seed
+   - round seed
    - every admitted miner submission
 3. All validators download the same roster and evaluate every miner with
    `mcbench.evaluate_multiple_agents(...)`.
@@ -128,7 +124,6 @@ Set via environment variables.
 | `NPA_LOOP_POLL_SECONDS` | `12` | Validator loop poll cadence |
 | `NPA_WORKSPACE_ROOT` | `/tmp/npa_validator` | Local validator round workspace |
 | `NPA_MAX_PARALLEL_AGENTS` | `2` | Parallel mcbench agent slots |
-| `NPA_FIRST_ROUND_START_AT` | unset | First round start time for owner bootstrap |
 | `CHUTES_API_KEY` | unset | Upstream Chutes API key used by the validator proxy |
 | `NPA_PROXY_ENABLED` | `1` | Enable validator-local Chutes proxy injection |
 | `NPA_PROXY_PORT` | `18080` | Host port exposed to miner containers as the local proxy |
@@ -137,5 +132,3 @@ Set via environment variables.
 | `NPA_PROXY_DEFAULT_OUTPUT_PRICE_PER_1M_USD` | `0` | Fallback output token price used for spend control |
 | `NPA_PROXY_MODEL_PRICES_JSON` | empty | Optional per-model pricing JSON |
 | `NPA_PROXY_MAX_TOTAL_SPEND_USD` | `1.0` | Max total proxy spend per miner run |
-
-Replace `NPA_OWNER_HOTKEY` before deploy.

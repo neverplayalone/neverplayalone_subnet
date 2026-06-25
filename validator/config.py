@@ -3,12 +3,6 @@ from __future__ import annotations
 
 import os
 
-# Validator hotkey allowed to call backend admin endpoints like bootstrap/freeze.
-OWNER_HOTKEY = os.environ.get(
-    "NPA_OWNER_HOTKEY",
-    "5PLACEHOLDER_OWNER_HOTKEY_REPLACE_BEFORE_DEPLOY",
-)
-
 NETUID = 490
 NETWORK = os.environ.get("NPA_NETWORK", "test")
 API_URL = os.environ.get("NPA_API_URL", "https://api.neverplayalone.ai")
@@ -34,9 +28,6 @@ PROXY_MAX_TOTAL_SPEND_USD = float(os.environ.get("NPA_PROXY_MAX_TOTAL_SPEND_USD"
 PROXY_UPSTREAM_TIMEOUT_SECONDS = float(
     os.environ.get("NPA_PROXY_UPSTREAM_TIMEOUT_SECONDS", "60")
 )
-
-# Used only when the owner validator needs to bootstrap the very first round.
-FIRST_ROUND_START_AT = os.environ.get("NPA_FIRST_ROUND_START_AT")
 
 # Keep committed payload versioned if validator-side chain payloads change later.
 COMMIT_VERSION = 1

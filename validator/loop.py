@@ -7,9 +7,8 @@ from typing import Optional
 
 from . import chain
 from .api_client import APIClient
-from .config import LOOP_POLL_SECONDS, OWNER_HOTKEY
+from .config import LOOP_POLL_SECONDS
 from .duel import run_round_evaluation
-from .owner import owner_tick
 
 log = logging.getLogger(__name__)
 
@@ -82,18 +81,11 @@ def _process_consensus(wallet, api: APIClient, round_state: dict) -> Optional[tu
 
 
 def main_loop(wallet, api: APIClient) -> None:
-    is_owner = wallet.hotkey.ss58_address == OWNER_HOTKEY
     evaluated_rounds: set[int] = set()
     consensus_rounds: set[int] = set()
-    log.info("loop started (owner=%s)", is_owner)
+    log.info("loop started")
 
     while True:
-        try:
-            if is_owner:
-                owner_tick(api)
-        except Exception as exc:
-            log.warning("owner_tick failed: %s", exc)
-
         try:
             rounds = api.get_current_rounds()
         except Exception as exc:
@@ -121,4 +113,3 @@ def main_loop(wallet, api: APIClient) -> None:
                     log.warning("round=%s consensus failed: %s", round_id, exc)
 
         time.sleep(LOOP_POLL_SECONDS)
-

@@ -147,16 +147,3 @@ class APIClient:
                 "top_miner_hotkey": top_miner_hotkey,
             },
         )
-
-    def admin_bootstrap(self, first_round_start_at: int | None) -> dict:
-        return self._post_signed(
-            "/admin/bootstrap",
-            {"first_round_start_at": first_round_start_at},
-        )
-
-    def admin_freeze_round(self, round_id: int, freeze_block_hash: str) -> dict:
-        return self._post_signed(
-            f"/admin/rounds/{round_id}/freeze",
-            {"freeze_block_hash": freeze_block_hash},
-        )
-

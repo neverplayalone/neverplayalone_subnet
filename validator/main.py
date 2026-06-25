@@ -7,7 +7,7 @@ import sys
 
 from . import chain
 from .api_client import APIClient
-from .config import API_URL, NETUID, NETWORK, OWNER_HOTKEY, PROXY_ENABLED, PROXY_PORT
+from .config import API_URL, NETUID, NETWORK, PROXY_ENABLED, PROXY_PORT
 from .loop import main_loop
 
 
@@ -28,8 +28,7 @@ def main() -> int:
     wallet_hotkey = os.environ.get("NPA_HOTKEY", "default")
     wallet = chain.make_wallet(wallet_name, wallet_hotkey)
 
-    is_owner = wallet.hotkey.ss58_address == OWNER_HOTKEY
-    log.info("hotkey=%s owner=%s", wallet.hotkey.ss58_address, is_owner)
+    log.info("hotkey=%s", wallet.hotkey.ss58_address)
     log.info("netuid=%s network=%s api=%s", NETUID, NETWORK, API_URL)
     log.info("proxy_enabled=%s proxy_port=%s", PROXY_ENABLED, PROXY_PORT)
 
