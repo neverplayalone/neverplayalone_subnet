@@ -45,7 +45,7 @@ No central referee decides the winner. The chain does.
 
 ```
 neverplayalone_subnet/
-├── cli/        # `npa` CLI for miner submission
+├── miner/      # `npa` CLI for miner submission
 ├── validator/  # validator binary + backend client
 └── README.md
 ```
@@ -58,7 +58,7 @@ cd neverplayalone_subnet
 pip install -e .
 ```
 
-Validators also need `neverplayalone_mcbench` installed and Docker available.
+Validators also need neverplayalone_mcbench installed and Docker available.
 For LLM-based miner agents, validators also need a `CHUTES_API_KEY`.
 
 The backend lives in the separate `neverplayalone_api` repository.
