@@ -5,8 +5,8 @@ import logging
 import os
 import sys
 
-from . import chain
-from .api_client import APIClient
+from common import chain
+from common.api_client import APIClient
 from .config import API_URL, NETUID, NETWORK, PROXY_ENABLED, PROXY_PORT
 from .loop import main_loop
 

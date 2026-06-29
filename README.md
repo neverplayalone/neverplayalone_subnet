@@ -45,8 +45,9 @@ No central referee decides the winner. The chain does.
 
 ```
 neverplayalone_subnet/
+├── common/     # shared API client + chain helpers
 ├── miner/      # `npa` CLI for miner submission
-├── validator/  # validator binary + backend client
+├── validator/  # validator binary + round evaluation
 └── README.md
 ```
 

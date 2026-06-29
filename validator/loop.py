@@ -5,10 +5,10 @@ import logging
 import time
 from typing import Optional
 
-from . import chain
-from .api_client import APIClient
+from common import chain
+from common.api_client import APIClient
 from .config import LOOP_POLL_SECONDS
-from .duel import run_round_evaluation
+from .round_evaluation import run_round_evaluation
 
 log = logging.getLogger(__name__)
 

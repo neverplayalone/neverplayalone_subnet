@@ -5,6 +5,11 @@ from pathlib import Path
 
 import typer
 
+from common import chain
+from common.api_client import APIClient
+
+API_URL = "https://api.neverplayalone.ai"
+
 app = typer.Typer(help="Never Play Alone subnet CLI")
 
 
@@ -15,9 +20,6 @@ def submit(
     wallet_hotkey: str = typer.Option("default", "--hotkey", help="Bittensor hotkey name"),
 ) -> None:
     """Upload a round submission tarball to the backend."""
-    from validator import chain
-    from validator.api_client import APIClient
-
     if archive_path.suffixes[-2:] != [".tar", ".gz"]:
         typer.echo("error: submission archive must be a .tar.gz file", err=True)
         raise typer.Exit(2)
@@ -50,8 +52,6 @@ def status(
     """Show the current submission round from the backend."""
     import httpx
 
-    from validator.config import API_URL
-
     url = (api_url or API_URL).rstrip("/")
     try:
         response = httpx.get(f"{url}/miner/rounds/current", timeout=10.0)
@@ -76,4 +76,3 @@ def status(
 
 if __name__ == "__main__":
     app()
-

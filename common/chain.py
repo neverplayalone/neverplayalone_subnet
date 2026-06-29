@@ -1,10 +1,12 @@
-"""Bittensor SDK wrappers used by validators and miner CLI."""
+"""Bittensor SDK helpers shared by miners and validators."""
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING, Any, Optional
 
-from .config import NETUID, NETWORK
+NETUID = 490
+NETWORK = os.environ.get("NPA_NETWORK", "test")
 
 log = logging.getLogger(__name__)
 

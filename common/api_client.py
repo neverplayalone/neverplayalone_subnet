@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 
-from .config import API_URL
+API_URL = "https://api.neverplayalone.ai"
 
 
 class APIClient:
@@ -147,3 +147,4 @@ class APIClient:
                 "top_miner_hotkey": top_miner_hotkey,
             },
         )
+
