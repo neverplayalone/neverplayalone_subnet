@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import os
 
-NETUID = 98
-NETWORK = os.environ.get("NPA_NETWORK", "finney")
+# NETUID/NETWORK are owned by shared.chain (single source of truth); re-exported here.
+from shared.chain import NETUID, NETWORK  # noqa: F401
+
 API_URL = os.environ.get("NPA_API_URL", "https://api.neverplayalone.ai")
 
 MISSION_ID = os.environ.get("NPA_MISSION_ID", "resource_gathering")
@@ -17,9 +18,19 @@ PROXY_ENABLED = os.environ.get("NPA_PROXY_ENABLED", "1").lower() not in {"0", "f
 # Port the proxy container listens on inside the sandbox network. It is never
 # published to the host, so this is a container-internal port, not a host port.
 PROXY_PORT = int(os.environ.get("NPA_PROXY_PORT", "8080"))
-# OpenRouter is the upstream inference provider the sandbox proxy forwards to.
+# Upstream inference provider the sandbox proxy forwards to: "openrouter" (default)
+# or "chutes". Base URL is the provider preset unless NPA_PROXY_UPSTREAM_BASE_URL is set.
+PROXY_PROVIDER = os.environ.get("NPA_PROXY_PROVIDER", "openrouter").strip().lower()
+_PROVIDER_BASE_URLS = {
+    "openrouter": "https://openrouter.ai/api/v1",
+    "chutes": "https://llm.chutes.ai/v1",
+}
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_BASE_URL = os.environ.get("NPA_OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+CHUTES_API_KEY = os.environ.get("CHUTES_API_KEY", "")
+PROXY_UPSTREAM_API_KEY = CHUTES_API_KEY if PROXY_PROVIDER == "chutes" else OPENROUTER_API_KEY
+PROXY_UPSTREAM_BASE_URL = os.environ.get("NPA_PROXY_UPSTREAM_BASE_URL") or _PROVIDER_BASE_URLS.get(
+    PROXY_PROVIDER, _PROVIDER_BASE_URLS["openrouter"]
+)
 PROXY_ALLOWED_MODELS = os.environ.get("NPA_PROXY_ALLOWED_MODELS", "")
 PROXY_MODEL_PRICES_JSON = os.environ.get("NPA_PROXY_MODEL_PRICES_JSON", "")
 PROXY_DEFAULT_INPUT_PRICE_PER_1M_USD = float(

@@ -22,8 +22,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from validator.config import (
-    OPENROUTER_API_KEY,
-    OPENROUTER_BASE_URL,
     PROXY_ALLOWED_MODELS,
     PROXY_DEFAULT_INPUT_PRICE_PER_1M_USD,
     PROXY_DEFAULT_OUTPUT_PRICE_PER_1M_USD,
@@ -31,6 +29,9 @@ from validator.config import (
     PROXY_MAX_TOTAL_SPEND_USD,
     PROXY_MODEL_PRICES_JSON,
     PROXY_PORT,
+    PROXY_PROVIDER,
+    PROXY_UPSTREAM_API_KEY,
+    PROXY_UPSTREAM_BASE_URL,
     PROXY_UPSTREAM_TIMEOUT_SECONDS,
 )
 
@@ -118,14 +119,17 @@ class ProxyContainer:
     def from_config(cls, *, container_name: str, workspace: Path) -> "ProxyContainer":
         if not PROXY_ENABLED:
             raise RuntimeError("proxy is disabled")
-        if not OPENROUTER_API_KEY:
-            raise RuntimeError("OPENROUTER_API_KEY is required when proxy is enabled")
+        if not PROXY_UPSTREAM_API_KEY:
+            key_env = "CHUTES_API_KEY" if PROXY_PROVIDER == "chutes" else "OPENROUTER_API_KEY"
+            raise RuntimeError(
+                f"{key_env} is required when proxy is enabled (provider={PROXY_PROVIDER})"
+            )
         return cls(
             container_name=container_name,
             listen_port=PROXY_PORT,
             workspace=workspace,
-            upstream_api_key=OPENROUTER_API_KEY,
-            upstream_base_url=OPENROUTER_BASE_URL,
+            upstream_api_key=PROXY_UPSTREAM_API_KEY,
+            upstream_base_url=PROXY_UPSTREAM_BASE_URL,
             allowed_models=PROXY_ALLOWED_MODELS,
             model_prices_json=PROXY_MODEL_PRICES_JSON,
             default_input_price=PROXY_DEFAULT_INPUT_PRICE_PER_1M_USD,
