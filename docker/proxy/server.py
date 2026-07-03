@@ -40,7 +40,6 @@ LISTEN_HOST = _env("NPA_PROXY_LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(_env("NPA_PROXY_LISTEN_PORT", "8080"))
 SESSIONS_FILE = Path(_env("NPA_PROXY_SESSIONS_FILE", "/sessions.json"))
 USAGE_DIR = Path(_env("NPA_PROXY_USAGE_DIR", "/usage"))
-PROVIDER = _env("NPA_PROXY_PROVIDER", "openrouter").strip().lower()
 MODEL_PAIRS_FILE = Path(_env("NPA_PROXY_MODEL_PAIRS_FILE", "/model_pairs.json"))
 UPSTREAM_TIMEOUT = float(_env("NPA_PROXY_UPSTREAM_TIMEOUT_SECONDS", "60"))
 # OpenRouter attribution headers (optional; shown on the OpenRouter dashboard).
@@ -68,7 +67,7 @@ def _load_upstreams() -> dict[str, dict[str, str]]:
 
 
 UPSTREAMS = _load_upstreams()
-DEFAULT_PROVIDER = PROVIDER if PROVIDER in UPSTREAMS else next(iter(UPSTREAMS), "")
+DEFAULT_PROVIDER = next(iter(UPSTREAMS), "")
 
 
 def _upstream_headers(api_key: str) -> dict[str, str]:

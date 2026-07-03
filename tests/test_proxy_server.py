@@ -24,7 +24,6 @@ _PAIRS.write_text(json.dumps({"pairs": [
 ]}))
 os.environ["NPA_PROXY_MODEL_PAIRS_FILE"] = str(_PAIRS)
 os.environ["NPA_PROXY_OPENROUTER_KEY"] = "test"
-os.environ["NPA_PROXY_PROVIDER"] = "openrouter"
 
 if importlib.util.find_spec("httpx") is None:  # pragma: no cover
     pytest.skip("httpx not installed", allow_module_level=True)

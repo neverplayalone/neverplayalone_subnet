@@ -13,7 +13,6 @@ def _container(workspace: Path) -> ProxyContainer:
         workspace=workspace,
         openrouter_api_key="secret-key",
         chutes_api_key="",
-        provider="openrouter",
         default_max_total_spend_usd=1.0,
         upstream_timeout_seconds=60.0,
     )

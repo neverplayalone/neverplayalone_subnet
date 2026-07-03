@@ -67,7 +67,6 @@ All knobs:
 | `NPA_LOOP_POLL_SECONDS` | `12` | Validator loop poll cadence |
 | `NPA_WORKSPACE_ROOT` | `/tmp/npa_validator` | Local validator round workspace |
 | `NPA_MAX_PARALLEL_AGENTS` | `2` | Parallel npabench agent slots |
-| `NPA_PROXY_PROVIDER` | `openrouter` | Default/fallback provider (e.g. for model listing) |
 | `OPENROUTER_API_KEY` / `CHUTES_API_KEY` | unset | Provider keys — fund one (that provider only) or both (miners pick per request); ≥1 required |
 | `NPA_PROXY_PORT` | `8080` | Container-internal port the proxy listens on (not published to the host) |
 | _(allowlist)_ | — | Pinned in `docker/proxy/model_pairs.json` (also cross-provider model map) |

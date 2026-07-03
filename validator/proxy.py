@@ -26,7 +26,6 @@ from validator.config import (
     OPENROUTER_API_KEY,
     PROXY_MAX_TOTAL_SPEND_USD,
     PROXY_PORT,
-    PROXY_PROVIDER,
     PROXY_UPSTREAM_TIMEOUT_SECONDS,
 )
 
@@ -86,7 +85,6 @@ class ProxyContainer:
         workspace: Path,
         openrouter_api_key: str,
         chutes_api_key: str,
-        provider: str,
         default_max_total_spend_usd: float,
         upstream_timeout_seconds: float,
     ) -> None:
@@ -95,7 +93,6 @@ class ProxyContainer:
         self.workspace = workspace
         self.openrouter_api_key = openrouter_api_key
         self.chutes_api_key = chutes_api_key
-        self.provider = provider
         self.default_max_total_spend_usd = default_max_total_spend_usd
         self.upstream_timeout_seconds = upstream_timeout_seconds
         self._sessions: dict[str, ProxySession] = {}
@@ -118,7 +115,6 @@ class ProxyContainer:
             workspace=workspace,
             openrouter_api_key=OPENROUTER_API_KEY,
             chutes_api_key=CHUTES_API_KEY,
-            provider=PROXY_PROVIDER,
             default_max_total_spend_usd=PROXY_MAX_TOTAL_SPEND_USD,
             upstream_timeout_seconds=PROXY_UPSTREAM_TIMEOUT_SECONDS,
         )
@@ -222,7 +218,6 @@ class ProxyContainer:
 
     def _write_env_file(self) -> None:
         env = {
-            "NPA_PROXY_PROVIDER": self.provider,
             "NPA_PROXY_OPENROUTER_KEY": self.openrouter_api_key,
             "NPA_PROXY_CHUTES_KEY": self.chutes_api_key,
             "NPA_PROXY_LISTEN_PORT": str(self.listen_port),
