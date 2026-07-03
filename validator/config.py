@@ -14,7 +14,6 @@ WORKSPACE_ROOT = os.environ.get("NPA_WORKSPACE_ROOT", "/tmp/npa_validator")
 MAX_PARALLEL_AGENTS = int(os.environ.get("NPA_MAX_PARALLEL_AGENTS", "2"))
 BURN_RATE = float(os.environ.get("NPA_BURN_RATE", "0.9"))
 BURN_UID = int(os.environ.get("NPA_BURN_UID", "0"))
-PROXY_ENABLED = os.environ.get("NPA_PROXY_ENABLED", "1").lower() not in {"0", "false", "no"}
 # Port the proxy container listens on inside the sandbox network. It is never
 # published to the host, so this is a container-internal port, not a host port.
 PROXY_PORT = int(os.environ.get("NPA_PROXY_PORT", "8080"))

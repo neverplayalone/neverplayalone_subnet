@@ -52,8 +52,8 @@ Edit `.env`:
 - `NPA_BT_WALLET_DIR` — your `~/.bittensor` path if not using the default
   wallet root
 - `NPA_WALLET` / `NPA_HOTKEY` — the wallet registered above
-- `OPENROUTER_API_KEY` and `NPA_PROXY_ENABLED=1` — only when miners need LLM
-  access through the proxy
+- `OPENROUTER_API_KEY` (or `CHUTES_API_KEY`) — **required**; the LLM proxy runs
+  every round and needs a provider key
 
 All knobs:
 
@@ -67,9 +67,9 @@ All knobs:
 | `NPA_LOOP_POLL_SECONDS` | `12` | Validator loop poll cadence |
 | `NPA_WORKSPACE_ROOT` | `/tmp/npa_validator` | Local validator round workspace |
 | `NPA_MAX_PARALLEL_AGENTS` | `2` | Parallel npabench agent slots |
-| `OPENROUTER_API_KEY` | unset | OpenRouter API key used by the validator proxy |
-| `NPA_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
-| `NPA_PROXY_ENABLED` | `1` | Run the per-round egress proxy container |
+| `NPA_PROXY_PROVIDER` | `openrouter` | Upstream LLM provider (`openrouter` or `chutes`) |
+| `OPENROUTER_API_KEY` / `CHUTES_API_KEY` | unset | Provider API key (required) |
+| `NPA_PROXY_UPSTREAM_BASE_URL` | provider preset | Override the upstream base URL |
 | `NPA_PROXY_PORT` | `8080` | Container-internal port the proxy listens on (not published to the host) |
 | `NPA_PROXY_ALLOWED_MODELS` | empty | Optional comma-separated model allowlist |
 | `NPA_PROXY_DEFAULT_INPUT_PRICE_PER_1M_USD` | `0` | Fallback input token price used for spend control |
@@ -114,7 +114,7 @@ and can be deleted after a round completes.
 ## The LLM proxy
 
 Miner sandboxes run on per-slot `--internal` Docker networks with no internet
-access. When `NPA_PROXY_ENABLED=1`, each round starts an **egress-proxy
+access. Each round starts an **egress-proxy
 container** that npabench attaches to those networks, so the sandbox reaches it
 by container DNS (`http://npa-proxy-round-<id>:8080/v1`) and never touches the
 host. The proxy is the sandbox's only route to OpenRouter:

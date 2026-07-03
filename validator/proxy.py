@@ -25,7 +25,6 @@ from validator.config import (
     PROXY_ALLOWED_MODELS,
     PROXY_DEFAULT_INPUT_PRICE_PER_1M_USD,
     PROXY_DEFAULT_OUTPUT_PRICE_PER_1M_USD,
-    PROXY_ENABLED,
     PROXY_MAX_TOTAL_SPEND_USD,
     PROXY_MODEL_PRICES_JSON,
     PROXY_PORT,
@@ -117,8 +116,6 @@ class ProxyContainer:
 
     @classmethod
     def from_config(cls, *, container_name: str, workspace: Path) -> "ProxyContainer":
-        if not PROXY_ENABLED:
-            raise RuntimeError("proxy is disabled")
         if not PROXY_UPSTREAM_API_KEY:
             key_env = "CHUTES_API_KEY" if PROXY_PROVIDER == "chutes" else "OPENROUTER_API_KEY"
             raise RuntimeError(
