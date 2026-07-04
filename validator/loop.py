@@ -152,7 +152,8 @@ def main_loop(wallet, api: APIClient) -> None:
                 except Exception as exc:
                     log.exception("round=%s evaluation failed: %s", round_id, exc)
 
-            if time.time() >= float(evaluating_round["scoreboard_deadline_at"]) and round_id not in consensus_rounds:
+            deadline_block = int(evaluating_round["scoreboard_deadline_block"])
+            if chain.current_block() >= deadline_block and round_id not in consensus_rounds:
                 try:
                     winner = _process_consensus(wallet, api, evaluating_round)
                     if winner is not None:
