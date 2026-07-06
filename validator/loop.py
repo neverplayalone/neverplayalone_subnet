@@ -77,7 +77,7 @@ def _select_winner(entries: dict[str, dict], margin: float) -> tuple[Optional[di
     return champion, True
 
 
-def _round_margin(api: APIClient, round_id: int) -> float:
+def _round_margin(api: APIClient, round_id: str) -> float:
     try:
         roster = api.get_round_roster(round_id)
         value = roster.get("champion_margin")
@@ -89,7 +89,7 @@ def _round_margin(api: APIClient, round_id: int) -> float:
 
 
 def _process_consensus(wallet, api: APIClient, round_state: dict) -> Optional[tuple[int, str]]:
-    round_id = int(round_state["round_id"])
+    round_id = round_state["round_id"]  # date-based string id, e.g. "2026-07-06-AM"
     scoreboards = api.list_round_scoreboards(round_id)
     entries = _weighted_entry_scores(scoreboards, round_state.get("freeze_block_hash"))
     if not entries:
@@ -129,8 +129,8 @@ def _process_consensus(wallet, api: APIClient, round_state: dict) -> Optional[tu
 
 
 def main_loop(wallet, api: APIClient) -> None:
-    evaluated_rounds: set[int] = set()
-    consensus_rounds: set[int] = set()
+    evaluated_rounds: set[str] = set()
+    consensus_rounds: set[str] = set()
     log.info("loop started")
 
     while True:
@@ -143,7 +143,7 @@ def main_loop(wallet, api: APIClient) -> None:
 
         evaluating_round = rounds.get("evaluating_round")
         if evaluating_round:
-            round_id = int(evaluating_round["round_id"])
+            round_id = evaluating_round["round_id"]
             if round_id not in evaluated_rounds:
                 try:
                     run_round_evaluation(wallet, api, evaluating_round)
