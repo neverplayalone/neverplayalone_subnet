@@ -134,6 +134,28 @@ host port and is not reachable from the host LAN or the internet.
 ## Updating
 
 ```bash
-git pull
-./scripts/validator_setup.sh   # refreshes deps and the pinned npabench checkout
+./scripts/validator_update.sh
+```
+
+`validator_update.sh`:
+
+1. fast-forwards the current branch from `origin`
+2. re-runs `validator_setup.sh` to refresh Python deps, the pinned
+   `vendor/neverplayalone_bench` checkout, and recorder dependencies
+3. optionally restarts your PM2 app if you pass `--pm2-name <name>` (or set
+   `NPA_PM2_NAME`)
+
+Examples:
+
+```bash
+./scripts/validator_update.sh --pm2-name validator
+NPA_PM2_NAME=validator ./scripts/validator_update.sh
+./scripts/validator_update.sh --no-restart
+```
+
+The script refuses to update a dirty worktree by default so it does not
+overwrite local changes. Override only when you know what you are doing:
+
+```bash
+NPA_ALLOW_DIRTY=1 ./scripts/validator_update.sh
 ```
