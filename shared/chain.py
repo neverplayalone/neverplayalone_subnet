@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import TYPE_CHECKING, Any, Optional
 
 NETUID = int(os.environ.get("NPA_NETUID", "98"))
@@ -14,6 +15,7 @@ if TYPE_CHECKING:
     import bittensor as bt
 
 _subtensor: Optional[Any] = None
+_subtensor_lock = threading.RLock()
 
 
 def _bt():
@@ -32,11 +34,12 @@ def _resolve_ctor(bt, *names: str):
 
 def get_subtensor() -> "bt.subtensor":
     global _subtensor
-    if _subtensor is None:
-        bt = _bt()
-        subtensor_ctor = _resolve_ctor(bt, "subtensor", "Subtensor")
-        _subtensor = subtensor_ctor(network=NETWORK)
-    return _subtensor
+    with _subtensor_lock:
+        if _subtensor is None:
+            bt = _bt()
+            subtensor_ctor = _resolve_ctor(bt, "subtensor", "Subtensor")
+            _subtensor = subtensor_ctor(network=NETWORK)
+        return _subtensor
 
 
 def make_wallet(name: str = "default", hotkey: str = "default") -> "bt.wallet":
@@ -50,29 +53,33 @@ def make_wallet(name: str = "default", hotkey: str = "default") -> "bt.wallet":
 
 
 def current_block() -> int:
-    return get_subtensor().get_current_block()
+    with _subtensor_lock:
+        return get_subtensor().get_current_block()
 
 
 def current_block_hash() -> str:
-    substrate = getattr(get_subtensor(), "substrate", None)
-    if substrate is None or not hasattr(substrate, "get_block_hash"):
-        raise RuntimeError("subtensor substrate does not expose get_block_hash")
-    return str(substrate.get_block_hash(current_block()))
+    with _subtensor_lock:
+        substrate = getattr(get_subtensor(), "substrate", None)
+        if substrate is None or not hasattr(substrate, "get_block_hash"):
+            raise RuntimeError("subtensor substrate does not expose get_block_hash")
+        return str(substrate.get_block_hash(current_block()))
 
 
 def block_number_for_hash(block_hash: str) -> Optional[int]:
-    substrate = getattr(get_subtensor(), "substrate", None)
-    if substrate is None or not hasattr(substrate, "get_block_number"):
-        return None
-    try:
-        return int(substrate.get_block_number(block_hash))
-    except Exception as exc:
-        log.warning("could not resolve block number for hash %s: %s", block_hash, exc)
-        return None
+    with _subtensor_lock:
+        substrate = getattr(get_subtensor(), "substrate", None)
+        if substrate is None or not hasattr(substrate, "get_block_number"):
+            return None
+        try:
+            return int(substrate.get_block_number(block_hash))
+        except Exception as exc:
+            log.warning("could not resolve block number for hash %s: %s", block_hash, exc)
+            return None
 
 
 def get_metagraph(block: Optional[int] = None):
-    return get_subtensor().metagraph(NETUID, block=block)
+    with _subtensor_lock:
+        return get_subtensor().metagraph(NETUID, block=block)
 
 
 def hotkey_uid(hotkey: str, block: Optional[int] = None) -> int:
@@ -144,38 +151,39 @@ def set_winner_weights(
     burn_rate: float = 0.0,
     burn_uid: int = 0,
 ) -> None:
-    metagraph = get_metagraph()
-    count = len(metagraph.hotkeys)
-    raw_uids = list(range(count))
-    raw_weights = compute_weight_vector(count, winner_uid, burn_rate, burn_uid)
+    with _subtensor_lock:
+        metagraph = get_metagraph()
+        count = len(metagraph.hotkeys)
+        raw_uids = list(range(count))
+        raw_weights = compute_weight_vector(count, winner_uid, burn_rate, burn_uid)
 
-    try:
-        import numpy as np
-        from bittensor.utils.weight_utils import (
-            convert_weights_and_uids_for_emit,
-            process_weights_for_netuid,
-        )
-
-        uids = np.asarray(getattr(metagraph, "uids", raw_uids), dtype=np.int64)
-        weights = np.asarray(raw_weights, dtype=np.float32)
-        emit_uids, emit_weights = convert_weights_and_uids_for_emit(
-            *process_weights_for_netuid(
-                uids=uids,
-                weights=weights,
-                netuid=NETUID,
-                subtensor=get_subtensor(),
-                metagraph=metagraph,
+        try:
+            import numpy as np
+            from bittensor.utils.weight_utils import (
+                convert_weights_and_uids_for_emit,
+                process_weights_for_netuid,
             )
-        )
-    except Exception as exc:
-        log.warning("weight preprocessing unavailable, falling back to raw weights: %s", exc)
-        emit_uids, emit_weights = raw_uids, raw_weights
 
-    get_subtensor().set_weights(
-        wallet=wallet,
-        netuid=NETUID,
-        uids=emit_uids,
-        weights=emit_weights,
-        wait_for_inclusion=False,
-        wait_for_finalization=False,
-    )
+            uids = np.asarray(getattr(metagraph, "uids", raw_uids), dtype=np.int64)
+            weights = np.asarray(raw_weights, dtype=np.float32)
+            emit_uids, emit_weights = convert_weights_and_uids_for_emit(
+                *process_weights_for_netuid(
+                    uids=uids,
+                    weights=weights,
+                    netuid=NETUID,
+                    subtensor=get_subtensor(),
+                    metagraph=metagraph,
+                )
+            )
+        except Exception as exc:
+            log.warning("weight preprocessing unavailable, falling back to raw weights: %s", exc)
+            emit_uids, emit_weights = raw_uids, raw_weights
+
+        get_subtensor().set_weights(
+            wallet=wallet,
+            netuid=NETUID,
+            uids=emit_uids,
+            weights=emit_weights,
+            wait_for_inclusion=False,
+            wait_for_finalization=False,
+        )
