@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import threading
+from types import SimpleNamespace
+
+from shared import chain
 from shared.chain import compute_weight_vector
 
 
@@ -51,6 +55,46 @@ def test_negative_burn_rate_is_clamped_to_zero():
 def test_out_of_range_burn_uid_disables_burn():
     weights = compute_weight_vector(4, winner_uid=2, burn_rate=0.9, burn_uid=99)
     assert _as_map(weights) == {2: 1.0}
+
+
+def test_weight_rpc_blocks_concurrent_chain_reads(monkeypatch):
+    weight_started = threading.Event()
+    release_weight_rpc = threading.Event()
+    block_read_finished = threading.Event()
+
+    class BlockingSubtensor:
+        def metagraph(self, netuid, block=None):
+            del netuid, block
+            return SimpleNamespace(hotkeys=["winner"])
+
+        def set_weights(self, **kwargs):
+            del kwargs
+            weight_started.set()
+            assert release_weight_rpc.wait(timeout=1)
+
+        def get_current_block(self):
+            return 123
+
+    monkeypatch.setattr(chain, "_subtensor", BlockingSubtensor())
+
+    weight_thread = threading.Thread(target=chain.set_winner_weights, args=(object(), 0))
+    weight_thread.start()
+    assert weight_started.wait(timeout=1)
+
+    def read_current_block():
+        assert chain.current_block() == 123
+        block_read_finished.set()
+
+    read_thread = threading.Thread(target=read_current_block)
+    read_thread.start()
+    assert not block_read_finished.wait(timeout=0.05)
+
+    release_weight_rpc.set()
+    weight_thread.join(timeout=1)
+    read_thread.join(timeout=1)
+    assert not weight_thread.is_alive()
+    assert not read_thread.is_alive()
+    assert block_read_finished.is_set()
 
 
 def test_distinct_burn_uid_and_winner_at_95_percent():
