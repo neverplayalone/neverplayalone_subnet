@@ -14,8 +14,7 @@ log = logging.getLogger(__name__)
 if TYPE_CHECKING:
     import bittensor as bt
 
-_subtensor: Optional[Any] = None
-_subtensor_lock = threading.RLock()
+_subtensor_local = threading.local()
 
 
 def _bt():
@@ -33,13 +32,34 @@ def _resolve_ctor(bt, *names: str):
 
 
 def get_subtensor() -> "bt.subtensor":
-    global _subtensor
-    with _subtensor_lock:
-        if _subtensor is None:
-            bt = _bt()
-            subtensor_ctor = _resolve_ctor(bt, "subtensor", "Subtensor")
-            _subtensor = subtensor_ctor(network=NETWORK)
-        return _subtensor
+    """Return the calling thread's Subtensor client.
+
+    Validator evaluation and weight updates run on separate threads. The SDK
+    client owns mutable websocket state, so sharing one instance would require
+    serializing all RPCs and would let a slow weight submission stall evaluation.
+    """
+    subtensor = getattr(_subtensor_local, "client", None)
+    if subtensor is None:
+        bt = _bt()
+        subtensor_ctor = _resolve_ctor(bt, "subtensor", "Subtensor")
+        subtensor = subtensor_ctor(network=NETWORK)
+        _subtensor_local.client = subtensor
+    return subtensor
+
+
+def close_subtensor() -> None:
+    """Close and forget the calling thread's Subtensor client, if any."""
+    subtensor = getattr(_subtensor_local, "client", None)
+    if subtensor is None:
+        return
+    try:
+        close = getattr(subtensor, "close", None)
+        if callable(close):
+            close()
+    except Exception:
+        log.warning("failed to close subtensor client", exc_info=True)
+    finally:
+        del _subtensor_local.client
 
 
 def make_wallet(name: str = "default", hotkey: str = "default") -> "bt.wallet":
@@ -53,33 +73,29 @@ def make_wallet(name: str = "default", hotkey: str = "default") -> "bt.wallet":
 
 
 def current_block() -> int:
-    with _subtensor_lock:
-        return get_subtensor().get_current_block()
+    return get_subtensor().get_current_block()
 
 
 def current_block_hash() -> str:
-    with _subtensor_lock:
-        substrate = getattr(get_subtensor(), "substrate", None)
-        if substrate is None or not hasattr(substrate, "get_block_hash"):
-            raise RuntimeError("subtensor substrate does not expose get_block_hash")
-        return str(substrate.get_block_hash(current_block()))
+    substrate = getattr(get_subtensor(), "substrate", None)
+    if substrate is None or not hasattr(substrate, "get_block_hash"):
+        raise RuntimeError("subtensor substrate does not expose get_block_hash")
+    return str(substrate.get_block_hash(current_block()))
 
 
 def block_number_for_hash(block_hash: str) -> Optional[int]:
-    with _subtensor_lock:
-        substrate = getattr(get_subtensor(), "substrate", None)
-        if substrate is None or not hasattr(substrate, "get_block_number"):
-            return None
-        try:
-            return int(substrate.get_block_number(block_hash))
-        except Exception as exc:
-            log.warning("could not resolve block number for hash %s: %s", block_hash, exc)
-            return None
+    substrate = getattr(get_subtensor(), "substrate", None)
+    if substrate is None or not hasattr(substrate, "get_block_number"):
+        return None
+    try:
+        return int(substrate.get_block_number(block_hash))
+    except Exception as exc:
+        log.warning("could not resolve block number for hash %s: %s", block_hash, exc)
+        return None
 
 
 def get_metagraph(block: Optional[int] = None):
-    with _subtensor_lock:
-        return get_subtensor().metagraph(NETUID, block=block)
+    return get_subtensor().metagraph(NETUID, block=block)
 
 
 def hotkey_uid(hotkey: str, block: Optional[int] = None) -> int:
@@ -151,39 +167,39 @@ def set_winner_weights(
     burn_rate: float = 0.0,
     burn_uid: int = 0,
 ) -> None:
-    with _subtensor_lock:
-        metagraph = get_metagraph()
-        count = len(metagraph.hotkeys)
-        raw_uids = list(range(count))
-        raw_weights = compute_weight_vector(count, winner_uid, burn_rate, burn_uid)
+    subtensor = get_subtensor()
+    metagraph = get_metagraph()
+    count = len(metagraph.hotkeys)
+    raw_uids = list(range(count))
+    raw_weights = compute_weight_vector(count, winner_uid, burn_rate, burn_uid)
 
-        try:
-            import numpy as np
-            from bittensor.utils.weight_utils import (
-                convert_weights_and_uids_for_emit,
-                process_weights_for_netuid,
-            )
-
-            uids = np.asarray(getattr(metagraph, "uids", raw_uids), dtype=np.int64)
-            weights = np.asarray(raw_weights, dtype=np.float32)
-            emit_uids, emit_weights = convert_weights_and_uids_for_emit(
-                *process_weights_for_netuid(
-                    uids=uids,
-                    weights=weights,
-                    netuid=NETUID,
-                    subtensor=get_subtensor(),
-                    metagraph=metagraph,
-                )
-            )
-        except Exception as exc:
-            log.warning("weight preprocessing unavailable, falling back to raw weights: %s", exc)
-            emit_uids, emit_weights = raw_uids, raw_weights
-
-        get_subtensor().set_weights(
-            wallet=wallet,
-            netuid=NETUID,
-            uids=emit_uids,
-            weights=emit_weights,
-            wait_for_inclusion=False,
-            wait_for_finalization=False,
+    try:
+        import numpy as np
+        from bittensor.utils.weight_utils import (
+            convert_weights_and_uids_for_emit,
+            process_weights_for_netuid,
         )
+
+        uids = np.asarray(getattr(metagraph, "uids", raw_uids), dtype=np.int64)
+        weights = np.asarray(raw_weights, dtype=np.float32)
+        emit_uids, emit_weights = convert_weights_and_uids_for_emit(
+            *process_weights_for_netuid(
+                uids=uids,
+                weights=weights,
+                netuid=NETUID,
+                subtensor=subtensor,
+                metagraph=metagraph,
+            )
+        )
+    except Exception as exc:
+        log.warning("weight preprocessing unavailable, falling back to raw weights: %s", exc)
+        emit_uids, emit_weights = raw_uids, raw_weights
+
+    subtensor.set_weights(
+        wallet=wallet,
+        netuid=NETUID,
+        uids=emit_uids,
+        weights=emit_weights,
+        wait_for_inclusion=False,
+        wait_for_finalization=False,
+    )

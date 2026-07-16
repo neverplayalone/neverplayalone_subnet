@@ -57,25 +57,41 @@ def test_out_of_range_burn_uid_disables_burn():
     assert _as_map(weights) == {2: 1.0}
 
 
-def test_weight_rpc_blocks_concurrent_chain_reads(monkeypatch):
+def test_weight_rpc_does_not_block_concurrent_chain_reads(monkeypatch):
     weight_started = threading.Event()
     release_weight_rpc = threading.Event()
     block_read_finished = threading.Event()
+    clients = []
 
-    class BlockingSubtensor:
+    class FakeSubtensor:
+        def __init__(self, *, blocks_weights: bool):
+            self.blocks_weights = blocks_weights
+            self.closed = False
+
         def metagraph(self, netuid, block=None):
             del netuid, block
             return SimpleNamespace(hotkeys=["winner"])
 
         def set_weights(self, **kwargs):
             del kwargs
-            weight_started.set()
-            assert release_weight_rpc.wait(timeout=1)
+            if self.blocks_weights:
+                weight_started.set()
+                assert release_weight_rpc.wait(timeout=1)
 
         def get_current_block(self):
             return 123
 
-    monkeypatch.setattr(chain, "_subtensor", BlockingSubtensor())
+        def close(self):
+            self.closed = True
+
+    def subtensor_ctor(*, network):
+        del network
+        client = FakeSubtensor(blocks_weights=not clients)
+        clients.append(client)
+        return client
+
+    chain.close_subtensor()
+    monkeypatch.setattr(chain, "_bt", lambda: SimpleNamespace(subtensor=subtensor_ctor))
 
     weight_thread = threading.Thread(target=chain.set_winner_weights, args=(object(), 0))
     weight_thread.start()
@@ -87,7 +103,8 @@ def test_weight_rpc_blocks_concurrent_chain_reads(monkeypatch):
 
     read_thread = threading.Thread(target=read_current_block)
     read_thread.start()
-    assert not block_read_finished.wait(timeout=0.05)
+    assert block_read_finished.wait(timeout=0.1)
+    assert len(clients) == 2
 
     release_weight_rpc.set()
     weight_thread.join(timeout=1)
@@ -95,6 +112,36 @@ def test_weight_rpc_blocks_concurrent_chain_reads(monkeypatch):
     assert not weight_thread.is_alive()
     assert not read_thread.is_alive()
     assert block_read_finished.is_set()
+
+
+def test_close_subtensor_closes_only_the_current_thread_client(monkeypatch):
+    clients = []
+
+    class FakeSubtensor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def subtensor_ctor(*, network):
+        del network
+        client = FakeSubtensor()
+        clients.append(client)
+        return client
+
+    chain.close_subtensor()
+    monkeypatch.setattr(chain, "_bt", lambda: SimpleNamespace(subtensor=subtensor_ctor))
+
+    first = chain.get_subtensor()
+    chain.close_subtensor()
+    second = chain.get_subtensor()
+    chain.close_subtensor()
+
+    assert first is clients[0]
+    assert first.closed is True
+    assert second is clients[1]
+    assert second.closed is True
 
 
 def test_distinct_burn_uid_and_winner_at_95_percent():

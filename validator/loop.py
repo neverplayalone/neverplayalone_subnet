@@ -427,6 +427,7 @@ def _weight_worker(wallet, base_url: str, stop_event: threading.Event) -> None:
             stop_event.wait(LOOP_POLL_SECONDS)
     finally:
         api.close()
+        chain.close_subtensor()
         log.info("weight worker stopped")
 
 
@@ -501,3 +502,4 @@ def main_loop(wallet, api: APIClient) -> None:
     finally:
         stop_event.set()
         weight_thread.join(timeout=LOOP_POLL_SECONDS + 1)
+        chain.close_subtensor()
