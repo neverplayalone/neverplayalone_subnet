@@ -129,6 +129,63 @@ def _aggregate_status(statuses: list[str]) -> str:
     return statuses[0] if statuses else "error"
 
 
+def _upload_entry_artifacts(
+    api: APIClient,
+    *,
+    round_id: str,
+    validator_uid: int,
+    entry: dict,
+    artifact_entry_id: str,
+    report_path: Path,
+    recording_path: Path,
+) -> dict | None:
+    """Request slots and upload one entry's report + recording for a task.
+
+    Returns the storage keys on success, or ``None`` if the upload failed. The
+    HTTP layer already retries transient failures; if it still fails we do NOT
+    abort the whole round (which would re-run every agent from scratch) — we skip
+    just this entry's artifact for this task and let the caller carry on. The
+    entry can still be scored from another task's successful upload; only an entry
+    that never uploads is dropped from the scoreboard (the backend rejects rows
+    whose artifacts do not exist). The presigned URL is kept out of the log — it
+    carries the signature.
+    """
+    try:
+        report_slot = api.request_artifact_slot(
+            round_id=round_id,
+            validator_uid=validator_uid,
+            entry_id=artifact_entry_id,
+            entry_kind=entry["entry_kind"],
+            miner_uid=entry["miner_uid"],
+            miner_hotkey=entry["miner_hotkey"],
+            artifact_kind="report_json",
+        )
+        recording_slot = api.request_artifact_slot(
+            round_id=round_id,
+            validator_uid=validator_uid,
+            entry_id=artifact_entry_id,
+            entry_kind=entry["entry_kind"],
+            miner_uid=entry["miner_uid"],
+            miner_hotkey=entry["miner_hotkey"],
+            artifact_kind="recording_mcpr",
+        )
+        api.upload_bytes(report_slot["upload_url"], report_path.read_bytes())
+        api.upload_bytes(recording_slot["upload_url"], recording_path.read_bytes())
+    except Exception as exc:  # noqa: BLE001 - skip this entry on any artifact failure
+        log.error(
+            "round=%s entry=%s: artifact upload failed after retries, skipping "
+            "this entry for this task (%s)",
+            round_id,
+            artifact_entry_id,
+            type(exc).__name__,
+        )
+        return None
+    return {
+        "report_s3_key": report_slot["storage_key"],
+        "recording_s3_key": recording_slot["storage_key"],
+    }
+
+
 def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
     from npabench import AgentMode, AgentSpec, evaluate_multiple_agents
 
@@ -218,45 +275,36 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
                     )
                 recording_path = _ensure_recording_file(report)
 
-                # Per-task artifacts get their own storage path via a task-suffixed
-                # entry_id (the backend derives the key from entry_id, so this needs
-                # no API change). The scoreboard row references task 0's keys.
-                artifact_entry_id = f"{entry_id}__t{task_index}"
-                report_slot = api.request_artifact_slot(
-                    round_id=round_id,
-                    validator_uid=validator_uid,
-                    entry_id=artifact_entry_id,
-                    entry_kind=entry["entry_kind"],
-                    miner_uid=entry["miner_uid"],
-                    miner_hotkey=entry["miner_hotkey"],
-                    artifact_kind="report_json",
-                )
-                recording_slot = api.request_artifact_slot(
-                    round_id=round_id,
-                    validator_uid=validator_uid,
-                    entry_id=artifact_entry_id,
-                    entry_kind=entry["entry_kind"],
-                    miner_uid=entry["miner_uid"],
-                    miner_hotkey=entry["miner_hotkey"],
-                    artifact_kind="recording_mcpr",
-                )
-                api.upload_bytes(report_slot["upload_url"], report_path.read_bytes())
-                api.upload_bytes(recording_slot["upload_url"], recording_path.read_bytes())
-
+                # The score/status come from the local eval and are valid whether
+                # or not the artifact upload below succeeds, so record them first.
                 task_scores[entry_id].append(float(report.score))
                 task_statuses[entry_id].append(report.status)
-                if task_index == 0:
-                    primary_keys[entry_id] = {
-                        "report_s3_key": report_slot["storage_key"],
-                        "recording_s3_key": recording_slot["storage_key"],
-                    }
+
+                # Per-task artifacts get their own storage path via a task-suffixed
+                # entry_id (the backend derives the key from entry_id, so this needs
+                # no API change). The scoreboard row references the first task whose
+                # upload succeeds — a transient upload failure on one task no longer
+                # discards the whole round.
+                artifact_entry_id = f"{entry_id}__t{task_index}"
+                keys = _upload_entry_artifacts(
+                    api,
+                    round_id=round_id,
+                    validator_uid=validator_uid,
+                    entry=entry,
+                    artifact_entry_id=artifact_entry_id,
+                    report_path=report_path,
+                    recording_path=recording_path,
+                )
+                if keys is not None:
+                    primary_keys.setdefault(entry_id, keys)
                 log.info(
-                    "round=%s task=%s entry=%s score=%s status=%s",
+                    "round=%s task=%s entry=%s score=%s status=%s uploaded=%s",
                     round_id,
                     task_index,
                     entry_id,
                     float(report.score),
                     report.status,
+                    keys is not None,
                 )
 
             # The per-task reference world is pure scratch once every agent in
@@ -274,9 +322,21 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
     # exactly as before (it still sees a single score per entry).
     rows: list[dict] = []
     for entry_id, entry in local_entries.items():
+        keys = primary_keys.get(entry_id)
+        if keys is None:
+            # Every task's artifact upload for this entry failed (even after
+            # retries). The backend rejects rows whose artifacts do not exist, so
+            # drop this entry from the scoreboard rather than fail the upload.
+            log.error(
+                "round=%s entry=%s: no artifact uploaded across %s tasks; "
+                "dropping from scoreboard",
+                round_id,
+                entry_id,
+                TASKS_PER_ROUND,
+            )
+            continue
         scores = task_scores[entry_id]
         final_score = sum(scores) / len(scores) if scores else 0.0
-        keys = primary_keys[entry_id]
         rows.append(
             {
                 "entry_id": entry_id,
@@ -297,6 +357,15 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
             entry_id,
             scores,
             final_score,
+        )
+
+    if not rows:
+        # Roster was non-empty but nothing uploaded — a full storage outage.
+        # Raise so the round is retried later (when storage recovers) instead of
+        # committing an empty scoreboard that would be marked done permanently.
+        raise RuntimeError(
+            f"round={round_id}: all {len(local_entries)} entries failed artifact "
+            "upload; not committing an empty scoreboard"
         )
 
     log.info("round=%s: uploading scoreboard rows=%s", round_id, len(rows))
