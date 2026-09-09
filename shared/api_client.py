@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import uuid
@@ -10,6 +11,17 @@ from pathlib import Path
 import httpx
 
 API_URL = "https://api.neverplayalone.ai"
+
+log = logging.getLogger(__name__)
+
+# Object storage (R2) occasionally returns a gateway/unavailable status or drops
+# the connection on large uploads (e.g. multi-MB recordings). Those are transient,
+# so retry the PUT with exponential backoff instead of letting one blip abort the
+# whole round evaluation. Client errors (4xx, e.g. an expired presigned signature)
+# are never retried — they will not succeed on a repeat.
+RETRYABLE_UPLOAD_STATUS = frozenset({500, 502, 503, 504})
+UPLOAD_MAX_ATTEMPTS = int(os.environ.get("NPA_UPLOAD_MAX_ATTEMPTS", "4"))
+UPLOAD_BACKOFF_SECONDS = float(os.environ.get("NPA_UPLOAD_BACKOFF_SECONDS", "1.0"))
 
 
 class APIClient:
@@ -58,14 +70,46 @@ class APIClient:
         return response.json()
 
     def _put_bytes(self, url: str, data: bytes) -> dict:
-        response = self._client.put(url, content=data)
-        response.raise_for_status()
+        response = self._put_with_retry(url, data)
         content_type = response.headers.get("Content-Type", "")
         if not response.content:
             return {}
         if "application/json" not in content_type.lower():
             return {}
         return response.json()
+
+    def _put_with_retry(self, url: str, data: bytes):
+        """PUT bytes to a (presigned) storage URL, retrying transient failures.
+
+        Retries transient gateway statuses (see RETRYABLE_UPLOAD_STATUS) and
+        connection-level errors with exponential backoff. A 4xx (e.g. an expired
+        signature) or the final attempt re-raises. The full URL is deliberately
+        kept out of the log line — it carries the presigned signature.
+        """
+        attempts = max(UPLOAD_MAX_ATTEMPTS, 1)
+        for attempt in range(1, attempts + 1):
+            try:
+                response = self._client.put(url, content=data)
+                response.raise_for_status()
+                return response
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status not in RETRYABLE_UPLOAD_STATUS or attempt == attempts:
+                    raise
+                reason = f"HTTP {status}"
+            except httpx.RequestError as exc:
+                if attempt == attempts:
+                    raise
+                reason = type(exc).__name__
+            backoff = UPLOAD_BACKOFF_SECONDS * (2 ** (attempt - 1))
+            log.warning(
+                "upload attempt %d/%d failed (%s); retrying in %.1fs",
+                attempt,
+                attempts,
+                reason,
+                backoff,
+            )
+            time.sleep(backoff)
 
     def health(self) -> dict:
         return self._get("/health")
