@@ -144,6 +144,12 @@ Minecraft server and the sandboxed miner agents.
    consensus update.
 
 Round workspaces live under `NPA_WORKSPACE_ROOT` (one directory per round).
+If the final scoreboard upload fails, the running validator keeps the completed
+scoreboard in RAM and retries only its upload on subsequent polls, including
+after the evaluation-start cutoff. It stops retrying after the scoreboard
+deadline or when the round changes. No scoreboard checkpoint is written to disk;
+restarting the validator loses this pending state and may cause evaluation again.
+
 The validator prunes them automatically: at the start of each evaluation it
 keeps only the most recent `NPA_WORKSPACE_RETAIN_ROUNDS` rounds (default the
 active round only) and deletes older ones, and it drops each task's scratch
