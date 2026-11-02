@@ -186,7 +186,9 @@ def _upload_entry_artifacts(
     }
 
 
-def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
+def run_round_evaluation(
+    wallet, api: APIClient, round_state: dict, *, upload_scoreboard: bool = True
+) -> dict:
     from npabench import AgentMode, AgentSpec, evaluate_multiple_agents
 
     round_id = round_state["round_id"]  # date-based string id, e.g. "2026-07-06-AM"
@@ -368,13 +370,14 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
             "upload; not committing an empty scoreboard"
         )
 
-    log.info("round=%s: uploading scoreboard rows=%s", round_id, len(rows))
-    api.upload_scoreboard(
-        round_id=round_id,
-        validator_uid=validator_uid,
-        stake_weight=stake_weight,
-        rows=rows,
-    )
+    if upload_scoreboard:
+        log.info("round=%s: uploading scoreboard rows=%s", round_id, len(rows))
+        api.upload_scoreboard(
+            round_id=round_id,
+            validator_uid=validator_uid,
+            stake_weight=stake_weight,
+            rows=rows,
+        )
     return {
         "round_id": round_id,
         "validator_uid": validator_uid,

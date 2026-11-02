@@ -550,6 +550,8 @@ def _weight_worker(wallet, base_url: str, stop_event: threading.Event) -> None:
 
 def main_loop(wallet, api: APIClient) -> None:
     evaluated_rounds: set[str] = set()
+    # Completed results stay in RAM until upload succeeds or their round expires.
+    pending_scoreboards: dict[str, dict] = {}
     skipped_evaluation_rounds: set[str] = set()
     stop_event = threading.Event()
     weight_thread = threading.Thread(
@@ -573,6 +575,11 @@ def main_loop(wallet, api: APIClient) -> None:
 
             evaluating_round = rounds.get("evaluating_round")
             submission_round = rounds.get("submission_round")
+            active_round_id = evaluating_round["round_id"] if evaluating_round else None
+            for pending_id in list(pending_scoreboards):
+                if pending_id != active_round_id:
+                    log.warning("round=%s: discarding expired pending scoreboard", pending_id)
+                    del pending_scoreboards[pending_id]
             log.info(
                 "round_state submission=%s evaluating=%s",
                 submission_round["round_id"] if submission_round else None,
@@ -584,19 +591,41 @@ def main_loop(wallet, api: APIClient) -> None:
                 cutoff_block = _evaluation_cutoff_block(evaluating_round)
                 if round_id not in evaluated_rounds and round_id not in skipped_evaluation_rounds:
                     try:
-                        if current_block < cutoff_block and current_block < deadline_block:
-                            log.info(
-                                (
-                                    "round=%s: starting evaluation current_block=%s "
-                                    "start_block=%s cutoff_block=%s deadline_block=%s"
-                                ),
-                                round_id,
-                                current_block,
-                                start_block,
-                                cutoff_block,
-                                deadline_block,
-                            )
-                            run_round_evaluation(wallet, api, evaluating_round)
+                        if round_id in pending_scoreboards or (
+                            current_block < cutoff_block and current_block < deadline_block
+                        ):
+                            if round_id not in pending_scoreboards:
+                                log.info(
+                                    (
+                                        "round=%s: starting evaluation current_block=%s "
+                                        "start_block=%s cutoff_block=%s deadline_block=%s"
+                                    ),
+                                    round_id,
+                                    current_block,
+                                    start_block,
+                                    cutoff_block,
+                                    deadline_block,
+                                )
+                                pending_scoreboards[round_id] = run_round_evaluation(
+                                    wallet, api, evaluating_round, upload_scoreboard=False
+                                )
+                            scoreboard = pending_scoreboards[round_id]
+                            # Evaluation can take hours; refresh the block before uploading.
+                            upload_block = chain.current_block()
+                            if upload_block > deadline_block:
+                                del pending_scoreboards[round_id]
+                                skipped_evaluation_rounds.add(round_id)
+                                log.warning(
+                                    "round=%s: scoreboard deadline passed; skipping upload", round_id
+                                )
+                                continue
+                            if scoreboard["rows"]:
+                                log.info(
+                                    "round=%s: uploading cached scoreboard rows=%s",
+                                    round_id, len(scoreboard["rows"]),
+                                )
+                                api.upload_scoreboard(**scoreboard)
+                            del pending_scoreboards[round_id]
                             evaluated_rounds.add(round_id)
                             log.info("round=%s evaluation uploaded", round_id)
                         else:
@@ -613,7 +642,13 @@ def main_loop(wallet, api: APIClient) -> None:
                                 end_block,
                             )
                     except Exception as exc:
-                        log.exception("round=%s evaluation failed: %s", round_id, exc)
+                        if round_id in pending_scoreboards:
+                            log.exception(
+                                "round=%s scoreboard upload failed; retaining results in RAM "
+                                "for retry: %s", round_id, exc,
+                            )
+                        else:
+                            log.exception("round=%s evaluation failed: %s", round_id, exc)
 
             time.sleep(LOOP_POLL_SECONDS)
     finally:
