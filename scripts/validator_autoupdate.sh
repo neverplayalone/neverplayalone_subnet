@@ -52,6 +52,7 @@ Environment:
   NPA_UPDATE_EARLY_WINDOW_BLOCKS=50      restart window before round start
   NPA_UPDATE_LOCK_FILE=/tmp/...          flock file path
   NPA_ALLOW_DIRTY=1                      forwarded to validator_update.sh
+  NPA_VALIDATOR_MODE=light|full          light validators have no bench checkout to track
 EOF
 }
 
@@ -83,8 +84,20 @@ has_subnet_drift() {
   return 1
 }
 
+# True when NPA_VALIDATOR_MODE selects a full (evaluating) validator.
+full_mode() {
+  case "$(printf '%s' "${NPA_VALIDATOR_MODE:-}" | tr -d "\"' " | tr '[:upper:]' '[:lower:]')" in
+    full|heavy) return 0 ;;
+  esac
+  return 1
+}
+
 has_bench_drift() {
   if [[ ! -d "$BENCH_DIR/.git" ]]; then
+    # A light validator never installs npabench, so there is nothing to track.
+    if ! full_mode; then
+      return 1
+    fi
     log "bench checkout missing at ${BENCH_DIR}"
     return 0
   fi

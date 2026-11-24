@@ -161,17 +161,76 @@ def compute_weight_vector(
     return weights
 
 
+def subnet_owner_hotkey() -> str:
+    hotkey = get_subtensor().get_subnet_owner_hotkey(NETUID)
+    if not hotkey:
+        raise RuntimeError(f"could not resolve the subnet owner hotkey for netuid {NETUID}")
+    return str(hotkey)
+
+
+def weight_row_for_hotkey(hotkey: str) -> Optional[list[tuple[int, int]]]:
+    """Return the weights ``hotkey`` has on chain as sorted ``(uid, u16 weight)``
+    pairs with zeros dropped.
+
+    ``None`` when the hotkey is not registered on the subnet; empty when it is
+    registered but has no weights. With commit-reveal enabled this is the last
+    *revealed* row, so it trails the validator's latest commit by the reveal period.
+    """
+    subtensor = get_subtensor()
+    uid = subtensor.get_uid_for_hotkey_on_subnet(hotkey, NETUID)
+    if uid is None:
+        return None
+    for row_uid, row in subtensor.weights(NETUID):
+        if int(row_uid) == int(uid):
+            return sorted((int(target), int(weight)) for target, weight in row if int(weight) > 0)
+    return []
+
+
+def set_weight_row(wallet: "bt.wallet", row: list[tuple[int, int]]) -> bool:
+    """Submit ``row`` (``(uid, weight)`` pairs, any scale) as this wallet's weights.
+
+    Waits for inclusion and returns True only when the chain accepted the
+    submission, so the caller can retry a rejection (e.g. the weights rate limit).
+    UIDs outside the current metagraph are dropped; nothing is submitted when no
+    weight is left.
+    """
+    metagraph = get_metagraph()
+    raw_weights = [0.0] * len(metagraph.hotkeys)
+    for uid, weight in row:
+        if 0 <= uid < len(raw_weights):
+            raw_weights[uid] = float(weight)
+    total = sum(raw_weights)
+    if total <= 0:
+        return False
+    raw_weights = [weight / total for weight in raw_weights]
+
+    response = _submit_weights(wallet, metagraph, raw_weights, wait_for_inclusion=True)
+    if not getattr(response, "success", False):
+        log.warning("weight submission not accepted: %s", getattr(response, "message", response))
+        return False
+    return True
+
+
 def set_winner_weights(
     wallet: "bt.wallet",
     winner_uid: Optional[int],
     burn_rate: float = 0.0,
     burn_uid: int = 0,
 ) -> None:
-    subtensor = get_subtensor()
     metagraph = get_metagraph()
-    count = len(metagraph.hotkeys)
-    raw_uids = list(range(count))
-    raw_weights = compute_weight_vector(count, winner_uid, burn_rate, burn_uid)
+    raw_weights = compute_weight_vector(len(metagraph.hotkeys), winner_uid, burn_rate, burn_uid)
+    _submit_weights(wallet, metagraph, raw_weights, wait_for_inclusion=False)
+
+
+def _submit_weights(
+    wallet: "bt.wallet",
+    metagraph: Any,
+    raw_weights: list[float],
+    *,
+    wait_for_inclusion: bool,
+) -> Any:
+    subtensor = get_subtensor()
+    raw_uids = list(range(len(raw_weights)))
 
     try:
         import numpy as np
@@ -195,11 +254,11 @@ def set_winner_weights(
         log.warning("weight preprocessing unavailable, falling back to raw weights: %s", exc)
         emit_uids, emit_weights = raw_uids, raw_weights
 
-    subtensor.set_weights(
+    return subtensor.set_weights(
         wallet=wallet,
         netuid=NETUID,
         uids=emit_uids,
         weights=emit_weights,
-        wait_for_inclusion=False,
+        wait_for_inclusion=wait_for_inclusion,
         wait_for_finalization=False,
     )

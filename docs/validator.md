@@ -1,21 +1,64 @@
 # Validator Guide
 
-Validators run every miner's agent against the same deterministic
-[npabench](https://github.com/neverplayalone/neverplayalone_bench) mission,
-upload the resulting artifacts and scoreboards, then compute the round winner
-from all validators' scoreboards and set winner-take-all weights on chain.
+A validator runs in one of two modes, chosen with `NPA_VALIDATOR_MODE`:
+
+| Mode | What it does | What it needs |
+| --- | --- | --- |
+| `light` (default) | Copies the main validator's on-chain weights. No evaluation. | A registered validator hotkey with stake and a chain connection |
+| `full` | Runs every miner's agent against the same deterministic [npabench](https://github.com/neverplayalone/neverplayalone_bench) mission, uploads the artifacts and scoreboards, computes the round winner from all validators' scoreboards and sets winner-take-all weights on chain | Everything below: Docker, npabench, LLM provider keys |
+
 See the [README](../README.md#incentive-mechanism) for the full mechanism.
+
+`full` can also be written `heavy`. Any other value stops the validator at
+startup instead of silently running light. When `NPA_VALIDATOR_MODE` is unset
+the validator runs light — except on the main validator itself, which has
+nobody to copy and keeps running full.
+
+> **Upgrading a validator that already evaluates:** an unset
+> `NPA_VALIDATOR_MODE` now means light. Add `NPA_VALIDATOR_MODE=full` to `.env`
+> *before* updating if you want to keep evaluating.
+
+## Light mode
+
+A light validator reads the weights the main validator has on chain and
+submits the same weights from its own hotkey. It never contacts the backend
+API, so it keeps working through an API outage, and it follows the main
+validator's burn rate automatically.
+
+- **Who it copies:** the subnet owner's hotkey, read from chain. Set
+  `NPA_MAIN_VALIDATOR_HOTKEY` to follow a different validator.
+- **When it submits:** as soon as the main validator's weights change, and
+  again every `NPA_WEIGHT_EPOCH_BLOCKS` blocks so the validator stays active.
+  A submission the chain does not accept (for example inside the weights rate
+  limit right after a restart) is retried a few blocks later.
+- **How far behind it is:** the subnet uses commit-reveal, so the main
+  validator's weights only become readable when they are revealed, and the
+  copy is revealed one tempo after that. Expect a light validator to trail the
+  main validator by about one tempo (360 blocks, roughly 72 minutes) each time
+  the winner changes.
+- **If the main validator has no weights on chain:** the light validator keeps
+  re-submitting the last weights it copied; if it has never copied any, it
+  submits nothing and keeps checking.
+
+Light mode ignores the evaluation, burn, proxy and task-generation settings.
 
 ## Requirements
 
+Light mode:
+
 - Ubuntu host with `sudo` access — `validator_setup.sh` installs `uv`, `git`,
-  Docker, and Node.js/npm if they are missing (npabench uses Docker for the
-  Minecraft server and miner sandboxes; the recorder is a Node tool)
+  and Node.js/npm (for `pm2`) if they are missing. Any small host works.
 - A registered validator hotkey with stake
+
+Full mode additionally needs:
+
+- Docker — `validator_setup.sh --full` installs it if missing (npabench uses
+  Docker for the Minecraft server and miner sandboxes; the recorder is a Node
+  tool)
 - `OPENROUTER_API_KEY` and `CHUTES_API_KEY` for npabench task generation and
   the miner-agent LLM proxy. Production validators should fund both providers.
 
-### Computing Requirements
+### Computing Requirements (full mode)
 
 Validator load scales mostly with `NPA_MAX_PARALLEL_AGENTS`. Each parallel
 slot runs a Minecraft server container plus one sandboxed miner agent, and
@@ -45,27 +88,35 @@ btcli subnet register --netuid 98 --subtensor.network finney --wallet.name valid
 
 git clone https://github.com/<this-repo>
 cd neverplayalone_subnet
-./scripts/validator_setup.sh
+./scripts/validator_setup.sh          # light validator
+./scripts/validator_setup.sh --full   # full validator
 ```
 
 The setup script:
 
-0. installs any missing system dependencies — `uv`, `git`, Docker, and
-   Node.js/npm (this step uses `sudo`)
+0. installs any missing system dependencies — `uv`, `git`, and Node.js/npm
+   (this step uses `sudo`)
 1. creates `.venv` with `uv` and installs the subnet package
-2. clones npabench into `vendor/neverplayalone_bench` at the pinned
-   `BENCH_REF` (override with `NPA_BENCH_REF`) and installs it editable —
-   npabench must run from a full repo checkout, so do not replace this with a
-   plain `pip install git+URL`
-3. runs `npm install` for the npabench recorder
-4. installs `pm2` (global, or repo-local if the global install lacks permission)
-5. creates `.env` from `.env.example` if missing
+2. installs `pm2` (global, or repo-local if the global install lacks permission)
+3. creates `.env` from `.env.example` if missing
+
+With `--full` (or `NPA_VALIDATOR_MODE=full` in the environment or `.env`) it
+also:
+
+- installs Docker if missing
+- clones npabench into `vendor/neverplayalone_bench` at the pinned
+  `BENCH_REF` (override with `NPA_BENCH_REF`) and installs it editable —
+  npabench must run from a full repo checkout, so do not replace this with a
+  plain `pip install git+URL`
+- runs `npm install` for the npabench recorder
+- writes `NPA_VALIDATOR_MODE=full` into a newly created `.env`
 
 After installing Docker it adds you to the `docker` group; log out and back in
 (or run `newgrp docker`) so the validator can reach the daemon without `sudo`.
 
 Re-running the script is safe; it updates the npabench checkout to the pin.
-All validators must run the same npabench version or scores diverge.
+An existing npabench checkout is always kept current, whatever the mode.
+All full validators must run the same npabench version or scores diverge.
 
 ## Configure
 
@@ -74,21 +125,24 @@ Edit `.env`:
 - `NPA_BT_WALLET_DIR` — your `~/.bittensor` path if not using the default
   wallet root
 - `NPA_WALLET` / `NPA_HOTKEY` — the wallet registered above
-- `OPENROUTER_API_KEY` and `CHUTES_API_KEY` — **required for production**; the
-  LLM proxy runs every round. One key is enough only for local/single-provider
-  testing.
+- `NPA_VALIDATOR_MODE` — `light` (default) or `full`
+- full mode: `OPENROUTER_API_KEY` and `CHUTES_API_KEY` — **required for
+  production**; the LLM proxy runs every round. One key is enough only for
+  local/single-provider testing.
 
-All knobs:
+All knobs (light mode uses only the first seven and `NPA_LOG_LEVEL`):
 
 | Var | Default | Meaning |
 | --- | --- | --- |
+| `NPA_VALIDATOR_MODE` | `light` | `light` copies the main validator's weights; `full` (or `heavy`) evaluates miners |
+| `NPA_MAIN_VALIDATOR_HOTKEY` | subnet owner hotkey | Hotkey (ss58) a light validator copies |
 | `NPA_NETWORK` | `finney` | Bittensor network |
-| `NPA_API_URL` | `https://api.neverplayalone.ai` | API base URL |
 | `NPA_WALLET` | `default` | Wallet name |
 | `NPA_HOTKEY` | `default` | Hotkey name |
-| `NPA_MISSION_ID` | `resource_gathering` | npabench mission id |
 | `NPA_LOOP_POLL_SECONDS` | `12` | Validator loop poll cadence |
-| `NPA_WEIGHT_EPOCH_BLOCKS` | `360` | Round-relative block interval for validator weight updates |
+| `NPA_WEIGHT_EPOCH_BLOCKS` | `360` | Full: round-relative block interval for weight updates. Light: blocks between re-submissions of unchanged weights |
+| `NPA_API_URL` | `https://api.neverplayalone.ai` | API base URL |
+| `NPA_MISSION_ID` | `resource_gathering` | npabench mission id |
 | `NPA_EVALUATION_START_CUTOFF_RATIO` | `0.5` | Skip evaluation if the validator starts after this fraction of the round |
 | `NPA_WORKSPACE_ROOT` | `/tmp/npa_validator` | Local validator round workspace |
 | `NPA_WORKSPACE_RETAIN_ROUNDS` | `1` | Round workspaces to keep under `NPA_WORKSPACE_ROOT`; older ones are pruned at the start of each evaluation. `1` keeps only the active round; raise to retain recent rounds for debugging |
@@ -116,10 +170,11 @@ pm2 start validator/main.py
 `main.py` loads `.env` on startup, so you don't need to `source .env` — just
 activate the venv (so `pm2` launches under the right Python) and start it.
 
-The validator runs directly on the host; Docker is used by npabench for the
-Minecraft server and the sandboxed miner agents.
+The validator runs directly on the host; in full mode Docker is used by
+npabench for the Minecraft server and the sandboxed miner agents. The startup
+log prints the selected mode (`mode=light` or `mode=full`).
 
-## What happens each round
+## What happens each round (full mode)
 
 1. The loop polls the backend for the current round windows and current block.
 2. If the validator starts before the evaluation cutoff
@@ -184,8 +239,9 @@ host port and is not reachable from the host LAN or the internet.
 `validator_update.sh`:
 
 1. fast-forwards the current branch from `origin`
-2. re-runs `validator_setup.sh` to refresh Python deps, the pinned
-   `vendor/neverplayalone_bench` checkout, and recorder dependencies
+2. re-runs `validator_setup.sh` to refresh Python deps and, on a full
+   validator, the pinned `vendor/neverplayalone_bench` checkout and recorder
+   dependencies
 3. optionally restarts your validator PM2 app if you pass `--pm2-name <name>`
    (or set `NPA_VALIDATOR_PM2_NAME`), or starts it if that PM2 process does
    not exist yet
@@ -217,6 +273,7 @@ pm2 start ./scripts/validator_autoupdate.sh --name validator-updater --interpret
 
 1. checks whether the local subnet repo differs from `origin/main`
 2. checks whether `vendor/neverplayalone_bench` differs from its tracked ref
+   (skipped on a light validator, which has no npabench checkout)
 3. only proceeds when the validator is in the **pre-start window**:
    within `NPA_UPDATE_EARLY_WINDOW_BLOCKS` blocks (default `50`) before the
    current submission round's `evaluation_start_block`
@@ -241,7 +298,9 @@ pm2 start ./scripts/validator_autoupdate.sh --name validator-updater --interpret
 ```
 
 This is intentionally simple: no validator runtime coordination, just a time
-gate based on the next round start block.
+gate based on the next round start block. The gate reads the round schedule
+from the API in both modes, so on a light validator an API outage delays
+updates but never the weight copying.
 
 Useful env vars:
 

@@ -155,7 +155,7 @@ what's happening in the world and what the agents are doing in real time.
 | Role | What you do | Guide |
 | --- | --- | --- |
 | **Miner** | Build a Minecraft agent, package it, submit with `npacli` | [docs/miner.md](docs/miner.md) |
-| **Validator** | Run the evaluation loop with Docker + npabench | [docs/validator.md](docs/validator.md) |
+| **Validator** | Light (default): copy the main validator's weights. Full: run the evaluation loop with Docker + npabench | [docs/validator.md](docs/validator.md) |
 
 We're excited to build this together with the Bittensor community — feedback
 is always welcome.

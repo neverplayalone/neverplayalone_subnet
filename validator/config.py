@@ -7,6 +7,14 @@ from shared.chain import NETUID, NETWORK  # noqa: F401
 
 API_URL = os.environ.get("NPA_API_URL", "https://api.neverplayalone.ai")
 
+# Validator mode: "light" (the default when unset) copies the main validator's
+# on-chain weights and runs no evaluation; "full" evaluates miners and sets its
+# own weights. See validator/mode.py for how the mode is selected.
+VALIDATOR_MODE = os.environ.get("NPA_VALIDATOR_MODE", "")
+# Hotkey (ss58) of the validator a light validator copies. Empty means the
+# subnet owner's hotkey, read from chain.
+MAIN_VALIDATOR_HOTKEY = os.environ.get("NPA_MAIN_VALIDATOR_HOTKEY", "")
+
 MISSION_ID = os.environ.get("NPA_MISSION_ID", "resource_gathering")
 LOOP_POLL_SECONDS = int(os.environ.get("NPA_LOOP_POLL_SECONDS", "12"))
 WEIGHT_EPOCH_BLOCKS = int(os.environ.get("NPA_WEIGHT_EPOCH_BLOCKS", "360"))

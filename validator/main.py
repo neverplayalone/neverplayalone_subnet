@@ -28,8 +28,17 @@ from queue import SimpleQueue  # noqa: E402
 
 from shared import chain  # noqa: E402
 from shared.api_client import APIClient  # noqa: E402
-from validator.config import API_URL, NETUID, NETWORK, PROXY_PORT  # noqa: E402
+from validator.config import (  # noqa: E402
+    API_URL,
+    MAIN_VALIDATOR_HOTKEY,
+    NETUID,
+    NETWORK,
+    PROXY_PORT,
+    VALIDATOR_MODE,
+)
+from validator.light import light_loop  # noqa: E402
 from validator.loop import main_loop  # noqa: E402
+from validator.mode import LIGHT, select_mode  # noqa: E402
 
 
 _LOG_QUEUE: SimpleQueue[logging.LogRecord] | None = None
@@ -88,8 +97,31 @@ def main() -> int:
         wallet_hotkey,
         os.environ.get("NPA_BT_WALLET_DIR", ""),
     )
-    log.info("netuid=%s network=%s api=%s", NETUID, NETWORK, API_URL)
-    log.info("proxy_port=%s", PROXY_PORT)
+    log.info("netuid=%s network=%s", NETUID, NETWORK)
+
+    try:
+        mode, main_hotkey = select_mode(
+            VALIDATOR_MODE,
+            own_hotkey=wallet.hotkey.ss58_address,
+            main_hotkey=MAIN_VALIDATOR_HOTKEY,
+        )
+    except Exception as exc:
+        log.error("cannot select validator mode: %s", exc)
+        return 1
+    log.info("mode=%s", mode)
+
+    if mode == LIGHT:
+        try:
+            light_loop(wallet, main_hotkey)
+        except KeyboardInterrupt:
+            log.info("interrupted")
+        return 0
+
+    if not VALIDATOR_MODE.strip():
+        log.warning(
+            "NPA_VALIDATOR_MODE is unset and this hotkey is the main validator; running full mode"
+        )
+    log.info("api=%s proxy_port=%s", API_URL, PROXY_PORT)
 
     api = APIClient(wallet, base_url=API_URL)
     try:
