@@ -8,19 +8,39 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent.parent
 
 
-def _load_dotenv() -> None:
-    env_file = _ROOT / ".env"
+def _parse_dotenv(env_file: Path) -> dict[str, str]:
+    """Read ``KEY=value`` lines the way the shell scripts do when they ``source``
+    the file: the last assignment of a key wins and a leading ``export`` is allowed."""
+    values: dict[str, str] = {}
     if not env_file.exists():
-        return
+        return values
     for raw in env_file.read_text().splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export ") :].strip()
+        values[key] = value.strip().strip('"').strip("'")
+    return values
 
 
-_load_dotenv()
+def _load_dotenv(env_file: Path | None = None) -> list[str]:
+    """Load ``.env`` into the process environment without overriding it.
+
+    Returns the keys whose process-environment value differs from the file: for
+    those an edit to ``.env`` is being ignored (pm2 keeps the environment a
+    process was started with until it is restarted with ``--update-env``).
+    """
+    overridden = []
+    for key, value in _parse_dotenv(env_file or _ROOT / ".env").items():
+        if os.environ.setdefault(key, value) != value:
+            overridden.append(key)
+    return overridden
+
+
+_DOTENV_OVERRIDDEN = _load_dotenv()
 
 import logging  # noqa: E402
 from logging.handlers import QueueHandler, QueueListener  # noqa: E402
@@ -79,9 +99,40 @@ def _setup_logging() -> None:
             logger_obj.setLevel(level_value)
 
 
+def _record_full_mode(env_file: Path) -> bool:
+    """Write NPA_VALIDATOR_MODE=full to ``.env`` for the main validator.
+
+    The setup and update scripts decide from ``.env`` whether to keep npabench
+    current. The main validator runs full even with the mode unset, so without
+    this line the scripts would treat it as light and let its npabench go stale.
+    Returns True when the line was added.
+    """
+    try:
+        if not env_file.exists():
+            return False
+        if _parse_dotenv(env_file).get("NPA_VALIDATOR_MODE", "").lower() in ("full", "heavy"):
+            return False
+        text = env_file.read_text()
+        with env_file.open("a", encoding="utf-8") as handle:
+            handle.write(
+                ("" if not text or text.endswith("\n") else "\n")
+                + "# Added by the validator: this hotkey is the main validator, which evaluates.\n"
+                + "NPA_VALIDATOR_MODE=full\n"
+            )
+        return True
+    except OSError:
+        return False
+
+
 def main() -> int:
     _setup_logging()
     log = logging.getLogger("npa.validator")
+    if _DOTENV_OVERRIDDEN:
+        log.warning(
+            "the process environment overrides these .env settings: %s. If you edited .env, "
+            "restart with `set -a; source .env; set +a; pm2 restart <name> --update-env`",
+            ", ".join(sorted(_DOTENV_OVERRIDDEN)),
+        )
 
     wallet_name = os.environ.get("NPA_WALLET", "default")
     wallet_hotkey = os.environ.get("NPA_HOTKEY", "default")
@@ -118,9 +169,18 @@ def main() -> int:
         return 0
 
     if not VALIDATOR_MODE.strip():
-        log.warning(
-            "NPA_VALIDATOR_MODE is unset and this hotkey is the main validator; running full mode"
-        )
+        if _record_full_mode(_ROOT / ".env"):
+            log.warning(
+                "NPA_VALIDATOR_MODE is unset and this hotkey is the main validator: running full "
+                "mode and recorded NPA_VALIDATOR_MODE=full in .env so the setup/update scripts "
+                "keep npabench current. Restart the auto-updater so it picks this up."
+            )
+        else:
+            log.warning(
+                "NPA_VALIDATOR_MODE is unset and this hotkey is the main validator; running full "
+                "mode. Set NPA_VALIDATOR_MODE=full in .env: the setup/update scripts only keep "
+                "npabench current when the mode is set to full."
+            )
     log.info("api=%s proxy_port=%s", API_URL, PROXY_PORT)
 
     api = APIClient(wallet, base_url=API_URL)

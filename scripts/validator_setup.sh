@@ -8,7 +8,8 @@ set -euo pipefail
 # vendor/ at the pinned ref below.
 #
 # Usage: ./scripts/validator_setup.sh [--full]
-#   --full   set up a full (evaluating) validator. Also selected by
+#   --full   set up a full (evaluating) validator and record
+#            NPA_VALIDATOR_MODE=full in .env. Full setup is also selected by
 #            NPA_VALIDATOR_MODE=full in the environment or in .env.
 
 BENCH_REPO_URL="https://github.com/neverplayalone/neverplayalone_bench"
@@ -24,25 +25,34 @@ cd "$ROOT_DIR"
 
 require() { command -v "$1" >/dev/null 2>&1; }
 
-# Full setup when asked for by flag, by NPA_VALIDATOR_MODE (environment, else
-# .env), or when an npabench checkout already exists — so a full validator set
-# up before modes existed keeps its evaluation stack current.
-FULL_SETUP=0
+# Full setup only when asked for: by flag or by NPA_VALIDATOR_MODE (environment,
+# else .env). A light validator never needs Docker or npabench, so an existing
+# npabench checkout is left alone and cannot block or break its updates.
+FULL_FLAG=0
 for arg in "$@"; do
   case "$arg" in
-    --full) FULL_SETUP=1 ;;
-    -h|--help) sed -n '4,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --full) FULL_FLAG=1 ;;
+    -h|--help) sed -n '4,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "error: unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
 MODE="${NPA_VALIDATOR_MODE:-}"
 if [[ -z "$MODE" && -f "${ROOT_DIR}/.env" ]]; then
-  MODE="$(sed -n 's/^NPA_VALIDATOR_MODE=//p' "${ROOT_DIR}/.env" | tail -n 1)"
+  # Read .env the way the other scripts do (by sourcing it), so all of them agree
+  # on duplicate lines, `export` prefixes and quoting.
+  MODE="$(set +eu; . "${ROOT_DIR}/.env" >/dev/null 2>&1; printf '%s' "${NPA_VALIDATOR_MODE:-}")"
 fi
-case "$(printf '%s' "$MODE" | tr -d "\"' " | tr '[:upper:]' '[:lower:]')" in
+MODE="$(printf '%s' "$MODE" | tr -d "\"' \r" | tr '[:upper:]' '[:lower:]')"
+FULL_SETUP=0
+case "$MODE" in
   full|heavy) FULL_SETUP=1 ;;
+  light|"") ;;
+  *)
+    echo "error: unknown NPA_VALIDATOR_MODE='${MODE}'; use 'light' or 'full'" >&2
+    exit 1
+    ;;
 esac
-if [[ -d "${BENCH_DIR}/.git" ]]; then
+if [[ "$FULL_FLAG" -eq 1 ]]; then
   FULL_SETUP=1
 fi
 
@@ -114,10 +124,21 @@ if [[ "$FULL_SETUP" -eq 1 ]]; then
     git clone "$BENCH_REPO_URL" "$BENCH_DIR"
   fi
   git -C "$BENCH_DIR" fetch --tags origin
-  # Prefer the remote-tracking ref so a branch pin picks up new commits;
-  # fall back to plain checkout for tags and commit SHAs.
-  git -C "$BENCH_DIR" checkout --detach --quiet "origin/${BENCH_REF}" 2>/dev/null \
-    || git -C "$BENCH_DIR" checkout --detach --quiet "$BENCH_REF"
+  # A branch pin is checked out from its remote-tracking ref so it picks up new
+  # commits; tags and commit SHAs are checked out directly. Which one applies is
+  # decided by whether the remote branch exists — never by a failed checkout,
+  # which used to fall back to the stale local branch from the first clone and
+  # silently roll the bench back to its install-time commit.
+  # --force: this checkout is managed by this script, so local edits or stray
+  # files must not block the sync (all validators must run the same bench).
+  if git -C "$BENCH_DIR" rev-parse --verify --quiet "refs/remotes/origin/${BENCH_REF}" >/dev/null; then
+    git -C "$BENCH_DIR" checkout --force --detach --quiet "origin/${BENCH_REF}"
+  elif git -C "$BENCH_DIR" rev-parse --verify --quiet "refs/heads/${BENCH_REF}" >/dev/null; then
+    echo "error: bench ref '${BENCH_REF}' is not on origin; only a stale local branch of that name exists" >&2
+    exit 1
+  else
+    git -C "$BENCH_DIR" checkout --force --detach --quiet "$BENCH_REF"
+  fi
 
   # npabench resolves its docker/ and tools/ directories relative to the repo
   # checkout, so it must be installed editable from the clone — a plain
@@ -140,12 +161,21 @@ else
   PM2="npx pm2"
 fi
 
+ENV_CREATED=0
 if [[ ! -f "${ROOT_DIR}/.env" ]]; then
   cp "${ROOT_DIR}/.env.example" "${ROOT_DIR}/.env"
-  if [[ "$FULL_SETUP" -eq 1 ]]; then
-    sed -i 's/^NPA_VALIDATOR_MODE=.*/NPA_VALIDATOR_MODE=full/' "${ROOT_DIR}/.env"
-  fi
+  ENV_CREATED=1
   echo "created .env from .env.example — edit NPA_WALLET / NPA_HOTKEY before running"
+fi
+# The validator itself reads its mode from .env, so a full setup of a new .env, or
+# an explicit --full on an existing one, has to be recorded there: otherwise the
+# evaluation stack gets installed but the validator still starts in light mode.
+if [[ "$FULL_FLAG" -eq 1 || ( "$ENV_CREATED" -eq 1 && "$FULL_SETUP" -eq 1 ) ]]; then
+  if grep -qE '^[[:space:]]*(export[[:space:]]+)?NPA_VALIDATOR_MODE=' "${ROOT_DIR}/.env"; then
+    sed -i -E 's/^[[:space:]]*(export[[:space:]]+)?NPA_VALIDATOR_MODE=.*/NPA_VALIDATOR_MODE=full/' "${ROOT_DIR}/.env"
+  else
+    printf '\nNPA_VALIDATOR_MODE=full\n' >> "${ROOT_DIR}/.env"
+  fi
 fi
 
 echo
@@ -158,4 +188,6 @@ else
   echo "Edit .env (NPA_WALLET / NPA_HOTKEY), then start the validator:"
 fi
 echo "  source .venv/bin/activate"
-echo "  ${PM2} start validator/main.py"
+echo "  ${PM2} start validator/main.py --name validator"
+echo "If it is already running, restart it so it picks up .env:"
+echo "  set -a; source .env; set +a; ${PM2} restart <name> --update-env"

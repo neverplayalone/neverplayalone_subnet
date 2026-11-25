@@ -127,3 +127,51 @@ def test_subnet_owner_hotkey_raises_when_chain_has_no_owner(install):
 
     with pytest.raises(RuntimeError):
         chain.subnet_owner_hotkey()
+
+
+class ChainLikeSubtensor(FakeSubtensor):
+    """Also answers what bittensor's own weight preprocessing asks the chain, so
+    the row goes through the real u16 conversion instead of the raw fallback."""
+
+    def metagraph(self, netuid, block=None):
+        del netuid, block
+        count = len(self.hotkeys)
+        return SimpleNamespace(hotkeys=self.hotkeys, n=count, uids=list(range(count)))
+
+    def min_allowed_weights(self, netuid):
+        del netuid
+        return 1
+
+    def max_weight_limit(self, netuid):
+        del netuid
+        return 1.0
+
+
+def test_set_weight_row_emits_exactly_the_copied_u16_row(install):
+    fake = install(ChainLikeSubtensor(hotkeys=[f"hk{i}" for i in range(8)]))
+
+    assert chain.set_weight_row(object(), [(0, 6553), (5, 65535)]) is True
+
+    submission = fake.submitted[0]
+    emitted = dict(zip((int(u) for u in submission["uids"]), (int(w) for w in submission["weights"])))
+    assert emitted == {0: 6553, 5: 65535}
+
+
+def test_set_weight_row_waits_for_inclusion_and_sends_a_rejected_row_only_once(install):
+    fake = install(FakeSubtensor(hotkeys=["a", "b"]))
+
+    chain.set_weight_row(object(), [(1, 65535)])
+
+    assert fake.submitted[0]["wait_for_inclusion"] is True
+    assert fake.submitted[0]["wait_for_finalization"] is False
+    assert fake.submitted[0]["max_attempts"] == 1  # the SDK default re-sends a rejection 5 times
+
+
+def test_winner_weights_are_still_submitted_without_waiting(install):
+    fake = install(FakeSubtensor(hotkeys=["a", "b", "c"]))
+
+    chain.set_winner_weights(object(), 2)
+
+    assert fake.submitted[0]["wait_for_inclusion"] is False
+    assert fake.submitted[0]["wait_for_finalization"] is False
+    assert "max_attempts" not in fake.submitted[0]

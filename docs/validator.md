@@ -15,8 +15,45 @@ the validator runs light — except on the main validator itself, which has
 nobody to copy and keeps running full.
 
 > **Upgrading a validator that already evaluates:** an unset
-> `NPA_VALIDATOR_MODE` now means light. Add `NPA_VALIDATOR_MODE=full` to `.env`
-> *before* updating if you want to keep evaluating.
+> `NPA_VALIDATOR_MODE` now means light. To keep evaluating, add
+> `NPA_VALIDATOR_MODE=full` to `.env` before the next round starts (the
+> auto-updater applies updates just before a round), then restart the
+> auto-updater. The main validator keeps evaluating without the setting and
+> writes the line into its own `.env` on first start, so the setup and update
+> scripts keep its npabench current.
+
+A light validator does not use Docker or npabench at all. If it was a full
+validator before, the old `vendor/neverplayalone_bench` checkout is ignored:
+the scripts neither update it nor depend on it.
+
+**After this update, restart the auto-updater once**
+(`pm2 restart validator-updater`). An updater that was started before the
+update keeps running its old logic, which still syncs the old npabench
+checkout and restarts the validator on every npabench release. Only delete
+`vendor/neverplayalone_bench` after that restart.
+
+### Changing the mode
+
+The mode is read from `.env`. Use `NPA_VALIDATOR_MODE=light` or
+`NPA_VALIDATOR_MODE=full` on a single line; if the variable appears more than
+once, the last line wins.
+
+- **Light to full:** run `./scripts/validator_setup.sh --full`. It installs
+  Docker and npabench and writes `NPA_VALIDATOR_MODE=full` into `.env`.
+- **Full to light:** set `NPA_VALIDATOR_MODE=light` in `.env` (set it
+  explicitly rather than deleting the line).
+
+Then restart both processes so they pick it up. pm2 keeps the environment a
+process was started with, so a plain `pm2 restart` can keep the old mode:
+
+```bash
+set -a; source .env; set +a
+pm2 restart validator --update-env
+pm2 restart validator-updater --update-env
+```
+
+The validator prints the mode it selected at startup (`mode=light` or
+`mode=full`) and warns when the process environment overrides `.env`.
 
 ## Light mode
 
@@ -30,7 +67,8 @@ validator's burn rate automatically.
 - **When it submits:** as soon as the main validator's weights change, and
   again every `NPA_WEIGHT_EPOCH_BLOCKS` blocks so the validator stays active.
   A submission the chain does not accept (for example inside the weights rate
-  limit right after a restart) is retried a few blocks later.
+  limit right after a restart) is retried after 10 blocks; repeated failures
+  double the wait, up to one `NPA_WEIGHT_EPOCH_BLOCKS`.
 - **How far behind it is:** the subnet uses commit-reveal, so the main
   validator's weights only become readable when they are revealed, and the
   copy is revealed one tempo after that. Expect a light validator to trail the
@@ -109,13 +147,15 @@ also:
   npabench must run from a full repo checkout, so do not replace this with a
   plain `pip install git+URL`
 - runs `npm install` for the npabench recorder
-- writes `NPA_VALIDATOR_MODE=full` into a newly created `.env`
+- with `--full`, writes `NPA_VALIDATOR_MODE=full` into `.env` (new or existing)
 
 After installing Docker it adds you to the `docker` group; log out and back in
 (or run `newgrp docker`) so the validator can reach the daemon without `sudo`.
 
-Re-running the script is safe; it updates the npabench checkout to the pin.
-An existing npabench checkout is always kept current, whatever the mode.
+Re-running the script is safe; in full mode it updates the npabench checkout
+to the pin. The sync is forced: local edits and files in the way inside
+`vendor/neverplayalone_bench` are overwritten, and the script stops with an
+error if the checkout cannot be brought to the pinned ref.
 All full validators must run the same npabench version or scores diverge.
 
 ## Configure
@@ -130,7 +170,9 @@ Edit `.env`:
   production**; the LLM proxy runs every round. One key is enough only for
   local/single-provider testing.
 
-All knobs (light mode uses only the first seven and `NPA_LOG_LEVEL`):
+All knobs. Light mode uses only the first seven, `NPA_LOG_LEVEL`, and the
+wallet/network settings (`NPA_BT_WALLET_DIR`, `NPA_NETUID`); the auto-updater
+also uses `NPA_API_URL` to time its restarts:
 
 | Var | Default | Meaning |
 | --- | --- | --- |
@@ -164,8 +206,12 @@ All knobs (light mode uses only the first seven and `NPA_LOG_LEVEL`):
 
 ```bash
 source .venv/bin/activate
-pm2 start validator/main.py
+pm2 start validator/main.py --name validator
 ```
+
+Name the process explicitly: without `--name`, pm2 calls it `main`, while the
+auto-updater manages the app named by `NPA_VALIDATOR_PM2_NAME` (default
+`validator`) and would start a second validator on the same hotkey.
 
 `main.py` loads `.env` on startup, so you don't need to `source .env` — just
 activate the venv (so `pm2` launches under the right Python) and start it.
@@ -273,7 +319,7 @@ pm2 start ./scripts/validator_autoupdate.sh --name validator-updater --interpret
 
 1. checks whether the local subnet repo differs from `origin/main`
 2. checks whether `vendor/neverplayalone_bench` differs from its tracked ref
-   (skipped on a light validator, which has no npabench checkout)
+   (full mode only; a light validator does not use npabench)
 3. only proceeds when the validator is in the **pre-start window**:
    within `NPA_UPDATE_EARLY_WINDOW_BLOCKS` blocks (default `50`) before the
    current submission round's `evaluation_start_block`

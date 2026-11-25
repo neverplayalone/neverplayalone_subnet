@@ -204,9 +204,17 @@ def set_weight_row(wallet: "bt.wallet", row: list[tuple[int, int]]) -> bool:
         return False
     raw_weights = [weight / total for weight in raw_weights]
 
-    response = _submit_weights(wallet, metagraph, raw_weights, wait_for_inclusion=True)
+    # One attempt per call: with wait_for_inclusion the SDK would otherwise send a
+    # rejected submission up to five times in a row. The caller owns the retries.
+    response = _submit_weights(
+        wallet, metagraph, raw_weights, wait_for_inclusion=True, max_attempts=1
+    )
     if not getattr(response, "success", False):
-        log.warning("weight submission not accepted: %s", getattr(response, "message", response))
+        log.warning(
+            "weight submission not accepted: %s",
+            getattr(response, "message", None)
+            or "no reason given (usually the weights rate limit has not elapsed yet)",
+        )
         return False
     return True
 
@@ -228,6 +236,7 @@ def _submit_weights(
     raw_weights: list[float],
     *,
     wait_for_inclusion: bool,
+    max_attempts: Optional[int] = None,
 ) -> Any:
     subtensor = get_subtensor()
     raw_uids = list(range(len(raw_weights)))
@@ -254,6 +263,7 @@ def _submit_weights(
         log.warning("weight preprocessing unavailable, falling back to raw weights: %s", exc)
         emit_uids, emit_weights = raw_uids, raw_weights
 
+    extra = {} if max_attempts is None else {"max_attempts": max_attempts}
     return subtensor.set_weights(
         wallet=wallet,
         netuid=NETUID,
@@ -261,4 +271,5 @@ def _submit_weights(
         weights=emit_weights,
         wait_for_inclusion=wait_for_inclusion,
         wait_for_finalization=False,
+        **extra,
     )

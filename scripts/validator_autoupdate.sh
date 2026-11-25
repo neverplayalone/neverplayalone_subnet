@@ -15,6 +15,8 @@ if [[ -f "${ROOT_DIR}/.env" ]]; then
 fi
 
 LOCK_FILE="${NPA_UPDATE_LOCK_FILE:-/tmp/npa_validator_autoupdate.lock}"
+# Exists while an update has been started but not completed, so it is retried.
+PENDING_FILE="${NPA_UPDATE_PENDING_FILE:-${LOCK_FILE}.pending}"
 VALIDATOR_PM2_NAME="${NPA_VALIDATOR_PM2_NAME:-${NPA_PM2_NAME:-validator}}"
 VALIDATOR_ENTRYPOINT="${NPA_VALIDATOR_ENTRYPOINT:-${ROOT_DIR}/validator/main.py}"
 VALIDATOR_INTERPRETER="${NPA_VALIDATOR_INTERPRETER:-${ROOT_DIR}/.venv/bin/python}"
@@ -51,8 +53,9 @@ Environment:
   NPA_UPDATE_INTERVAL_SECONDS=600        drift check interval
   NPA_UPDATE_EARLY_WINDOW_BLOCKS=50      restart window before round start
   NPA_UPDATE_LOCK_FILE=/tmp/...          flock file path
+  NPA_UPDATE_PENDING_FILE=<lock>.pending marks an update that did not complete
   NPA_ALLOW_DIRTY=1                      forwarded to validator_update.sh
-  NPA_VALIDATOR_MODE=light|full          light validators have no bench checkout to track
+  NPA_VALIDATOR_MODE=light|full          only a full validator tracks the bench checkout
 EOF
 }
 
@@ -84,20 +87,27 @@ has_subnet_drift() {
   return 1
 }
 
-# True when NPA_VALIDATOR_MODE selects a full (evaluating) validator.
+# True when NPA_VALIDATOR_MODE selects a full (evaluating) validator. .env is
+# re-read on every call, on top of the environment this script was started with,
+# so a mode change takes effect without restarting the updater.
 full_mode() {
-  case "$(printf '%s' "${NPA_VALIDATOR_MODE:-}" | tr -d "\"' " | tr '[:upper:]' '[:lower:]')" in
+  local mode="${NPA_VALIDATOR_MODE:-}"
+  if [[ -f "${ROOT_DIR}/.env" ]]; then
+    mode="$(set +eu; . "${ROOT_DIR}/.env" >/dev/null 2>&1; printf '%s' "${NPA_VALIDATOR_MODE:-}")"
+  fi
+  case "$(printf '%s' "$mode" | tr -d "\"' \r" | tr '[:upper:]' '[:lower:]')" in
     full|heavy) return 0 ;;
   esac
   return 1
 }
 
 has_bench_drift() {
+  # A light validator does not use npabench, so there is nothing to track —
+  # even if an old checkout is still on disk.
+  if ! full_mode; then
+    return 1
+  fi
   if [[ ! -d "$BENCH_DIR/.git" ]]; then
-    # A light validator never installs npabench, so there is nothing to track.
-    if ! full_mode; then
-      return 1
-    fi
     log "bench checkout missing at ${BENCH_DIR}"
     return 0
   fi
@@ -167,14 +177,22 @@ PY
 
 run_update() {
   log "running validator update via ${UPDATE_SCRIPT}"
-  (
-    cd "$ROOT_DIR"
+  # Marked before starting: validator_update.sh pulls first, so after a failed
+  # run there is no drift left that would trigger another attempt.
+  : > "$PENDING_FILE"
+  # This function runs as an `if` condition, where `set -e` is off, so the
+  # failure has to be checked explicitly or it would be reported as success.
+  if ! (
+    cd "$ROOT_DIR" || exit 1
     export NPA_VALIDATOR_PM2_NAME="$VALIDATOR_PM2_NAME"
     export NPA_PM2_NAME="$VALIDATOR_PM2_NAME"
     export NPA_VALIDATOR_ENTRYPOINT="$VALIDATOR_ENTRYPOINT"
     export NPA_VALIDATOR_INTERPRETER="$VALIDATOR_INTERPRETER"
     "$UPDATE_SCRIPT" --pm2-name "$VALIDATOR_PM2_NAME"
-  )
+  ); then
+    return 1
+  fi
+  rm -f "$PENDING_FILE"
   log "validator update complete"
 }
 
@@ -199,11 +217,22 @@ sync_bench() {
 
   log "syncing bench directly ref=${BENCH_REF} dir=${BENCH_DIR}"
   git -C "$BENCH_DIR" fetch --prune --tags origin >/dev/null 2>&1 || true
-  # Prefer the remote-tracking ref so a branch pin advances; fall back to a
-  # plain ref for tags and commit SHAs. --force overwrites tracked files but
-  # leaves untracked build output (e.g. recorder node_modules) in place.
-  if ! ( git -C "$BENCH_DIR" checkout --force --detach --quiet "origin/${BENCH_REF}" 2>/dev/null \
-         || git -C "$BENCH_DIR" checkout --force --detach --quiet "$BENCH_REF" ); then
+  # Same rule as validator_setup.sh: a branch pin is checked out from its
+  # remote-tracking ref so it advances, tags and commit SHAs directly. Which one
+  # applies is decided by what exists — never by a failed checkout, which used to
+  # fall back to the stale local branch from the first clone and roll the bench
+  # back. --force overwrites tracked files but leaves untracked build output
+  # (e.g. recorder node_modules) in place.
+  local target
+  if git -C "$BENCH_DIR" rev-parse --verify --quiet "refs/remotes/origin/${BENCH_REF}" >/dev/null; then
+    target="origin/${BENCH_REF}"
+  elif git -C "$BENCH_DIR" rev-parse --verify --quiet "refs/heads/${BENCH_REF}" >/dev/null; then
+    log "bench ref ${BENCH_REF} is not on origin; only a stale local branch of that name exists"
+    return 1
+  else
+    target="$BENCH_REF"
+  fi
+  if ! git -C "$BENCH_DIR" checkout --force --detach --quiet "$target"; then
     log "bench checkout failed ref=${BENCH_REF}"
     return 1
   fi
@@ -291,6 +320,7 @@ main() {
   while true; do
     subnet_drift=0
     bench_drift=0
+    update_pending=0
 
     if has_subnet_drift; then
       subnet_drift=1
@@ -298,17 +328,21 @@ main() {
     if has_bench_drift; then
       bench_drift=1
     fi
+    if [[ -f "$PENDING_FILE" ]]; then
+      update_pending=1
+      log "an earlier update did not complete; it will be run again"
+    fi
 
-    if [[ "$subnet_drift" -eq 1 || "$bench_drift" -eq 1 ]]; then
+    if [[ "$subnet_drift" -eq 1 || "$bench_drift" -eq 1 || "$update_pending" -eq 1 ]]; then
       if window_msg="$(in_prestart_window 2>&1)"; then
         log "$window_msg"
-        if [[ "$subnet_drift" -eq 1 ]]; then
-          # Subnet drift runs the full update, which also re-syncs the bench
-          # through validator_setup.sh.
+        if [[ "$subnet_drift" -eq 1 || "$update_pending" -eq 1 ]]; then
+          # Subnet drift runs the full update, which on a full validator also
+          # re-syncs the bench through validator_setup.sh.
           if run_update; then
             :
           else
-            log "update attempt failed"
+            log "update attempt failed; it will be run again"
           fi
         else
           # Bench-only drift: sync the vendored bench directly so it is not

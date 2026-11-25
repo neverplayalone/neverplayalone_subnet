@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 
 # Blocks to wait before retrying after the chain did not accept a submission
 # (e.g. the weights rate limit right after a restart) or there was nothing to copy.
+# Consecutive failed submissions double the wait, up to one weight epoch.
 COPY_RETRY_BLOCKS = 10
 
 WeightRow = list[tuple[int, int]]
@@ -32,6 +33,16 @@ class CopyState:
     row: Optional[WeightRow] = None  # last row the chain accepted from us
     block: Optional[int] = None  # block of that submission
     retry_block: int = 0  # no attempt before this block
+    failures: int = 0  # consecutive submissions the chain did not accept
+
+
+def _retry_delay(failures: int) -> int:
+    """Blocks to wait after the Nth consecutive failed submission: 10, 20, 40, ...
+    capped at one weight epoch. A validator that cannot set weights at all (no
+    permit, too little stake) therefore settles at one attempt per epoch, the
+    same as a full validator, instead of hitting the chain every few blocks."""
+    longest = max(WEIGHT_EPOCH_BLOCKS, COPY_RETRY_BLOCKS)
+    return min(COPY_RETRY_BLOCKS * 2 ** min(failures - 1, 16), longest)
 
 
 def copy_step(wallet, state: CopyState, main_hotkey: str, current_block: int) -> bool:
@@ -62,13 +73,20 @@ def copy_step(wallet, state: CopyState, main_hotkey: str, current_block: int) ->
             main_hotkey,
         )
 
-    if not chain.set_weight_row(wallet, target):
+    try:
+        accepted = chain.set_weight_row(wallet, target)
+    except Exception as exc:
+        log.warning("light: weight submission failed: %s", exc)
+        accepted = False
+    if not accepted:
+        state.failures += 1
+        delay = _retry_delay(state.failures)
         log.warning(
             "light: weights not accepted at block=%s; retrying in %s blocks",
             current_block,
-            COPY_RETRY_BLOCKS,
+            delay,
         )
-        state.retry_block = current_block + COPY_RETRY_BLOCKS
+        state.retry_block = current_block + delay
         return False
 
     log.info(
@@ -78,7 +96,7 @@ def copy_step(wallet, state: CopyState, main_hotkey: str, current_block: int) ->
         "changed" if changed else "refresh",
         target,
     )
-    state.row, state.block = target, current_block
+    state.row, state.block, state.failures = target, current_block, 0
     return True
 
 
@@ -91,6 +109,9 @@ def light_loop(wallet, main_hotkey: str) -> None:
                 copy_step(wallet, state, main_hotkey, chain.current_block())
             except Exception as exc:
                 log.warning("light: copy pass failed and will retry: %s", exc)
+                # Drop the chain client so the next pass opens a fresh connection
+                # instead of reusing one that may be dead.
+                chain.close_subtensor()
             time.sleep(LOOP_POLL_SECONDS)
     finally:
         chain.close_subtensor()

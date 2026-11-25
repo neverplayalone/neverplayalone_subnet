@@ -25,6 +25,8 @@ class ChainStub:
     def set_weight_row(self, wallet, row):
         del wallet
         self.submitted.append(row)
+        if isinstance(self.accept, Exception):
+            raise self.accept
         return self.accept
 
 
@@ -140,4 +142,47 @@ def test_light_loop_keeps_copying_after_a_chain_error(chain_stub, monkeypatch):
         light.light_loop(object(), "main-hk")
 
     assert chain_stub.submitted == [WINNER_ROW]
-    assert closed == [1]  # the chain client is released when the loop exits
+    # Dropped once after the failed pass, so the next pass reconnects instead of
+    # reusing a dead connection, and once more when the loop exits.
+    assert closed == [1, 1]
+
+
+def test_repeated_rejections_back_off_up_to_one_weight_epoch(chain_stub):
+    # A validator that cannot set weights (no permit, too little stake) must not
+    # keep hitting the chain every few blocks.
+    state = light.CopyState()
+    chain_stub.accept = False
+    attempts = []
+    for block in range(1000, 2200):
+        before = len(chain_stub.submitted)
+        _step(state, block)
+        if len(chain_stub.submitted) > before:
+            attempts.append(block)
+
+    assert attempts == [1000, 1010, 1030, 1070, 1150, 1310, 1630, 1990]
+
+
+def test_backoff_starts_over_after_an_accepted_submission(chain_stub):
+    state = light.CopyState()
+    chain_stub.accept = False
+    _step(state, 1000)
+    _step(state, 1010)
+    chain_stub.accept = True
+    assert _step(state, 1030) is True
+
+    chain_stub.accept = False
+    chain_stub.main_row = NEXT_WINNER_ROW
+    _step(state, 1031)
+    assert _step(state, 1040) is False  # 9 blocks later: still waiting
+    before = len(chain_stub.submitted)
+    _step(state, 1041)  # 10 blocks later: retried
+    assert len(chain_stub.submitted) == before + 1
+
+
+def test_submission_error_is_handled_like_a_rejection(chain_stub):
+    state = light.CopyState()
+    chain_stub.accept = RuntimeError("metagraph sync failed")
+
+    assert _step(state, 1000) is False
+    assert _step(state, 1009) is False
+    assert chain_stub.submitted == [WINNER_ROW]  # no second attempt inside the retry delay
